@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 **Inkference** (formerly rsd), a Firefox **Manifest V2** extension that bridges the browser to the self-hosted **lmgw**
-LLM gateway (default `http://127.0.0.1:8001`, OpenAI/Anthropic-compatible). No build/transpile step
+LLM gateway (default `http://127.0.0.1:8787`, OpenAI/Anthropic-compatible). No build/transpile step
 for the extension itself — `src/` ships as-is and the browser runs the ES modules directly.
 
 ## Commands

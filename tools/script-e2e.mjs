@@ -29,7 +29,7 @@
 // own `approve` uses --approve (default no), and every save the model asks for in a turn with
 // approve:no is declined and reported — the model is meant to ask the user first.
 //
-// Options: --gateway URL (default http://127.0.0.1:8001) · --url PAGE (default: mock/server.mjs
+// Options: --gateway URL (default http://127.0.0.1:8787) · --url PAGE (default: mock/server.mjs
 // started on --port, or a free port, serving feed.html) · --redeploy URL (default for the mock:
 // feed.html?deploy=2; skipped for other pages unless given) · --full (no trimming of tool results
 // in the transcript; by default each is cut at --trim chars, default 1500, and says how much was
@@ -73,7 +73,7 @@ const DEFAULT_TURNS = [
 // --- args -------------------------------------------------------------------
 const argv = process.argv.slice(2);
 let model = null;
-let gatewayUrl = "http://127.0.0.1:8001";
+let gatewayUrl = "http://127.0.0.1:8787";
 const gatewayKey = (process.env.LMGW_API_KEY || "").trim(); // env only: never an argv flag (shell history, ps)
 let pageUrl = null;
 let port = null;

@@ -37,7 +37,7 @@ const PAGE = `http://localhost:${PORT}/game.html`;
 // --- args -------------------------------------------------------------------
 const args = process.argv.slice(2);
 const models = [];
-let gatewayUrl = "http://127.0.0.1:8001";
+let gatewayUrl = "http://127.0.0.1:8787";
 const gatewayKey = (process.env.LMGW_API_KEY || "").trim(); // env only: never an argv flag (shell history, ps)
 let width = 1280, height = 800, dpr = 1, repeat = 1;
 for (let i = 0; i < args.length; i++) {

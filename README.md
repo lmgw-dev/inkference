@@ -77,7 +77,7 @@ for multi-site errands. Clicks that spend money or can't be undone pause for you
 
 - Firefox ≥ 115.
 - For everything except the built-in dark mode: [lmgw](https://github.com/lmgw-dev/lmgw), reachable
-  at `http://127.0.0.1:8001` by default (Options → Gateway base URL). If lmgw has *Require API key*
+  at `http://127.0.0.1:8787` by default (Options → Gateway base URL). If lmgw has *Require API key*
   on, create a client key under *Usage → Keys* and enter it in the options page.
 
 Inkference talks the OpenAI-compatible API, but it relies on lmgw specifics: model metadata, audio models,

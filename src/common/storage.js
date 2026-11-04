@@ -5,7 +5,7 @@ import { DEFAULT_SYSTEM_PROMPT } from "./prompts.js";
 import { DEFAULT_CLEANUP } from "./speechtext.js";
 
 export const DEFAULTS = {
-  gatewayUrl: "http://127.0.0.1:8001",
+  gatewayUrl: "http://127.0.0.1:8787",
   gatewayKey: "", // lmgw client key (Usage → Keys), sent as `Authorization: Bearer`; empty = no header. Never put it in a port message.
   defaultModel: null,
   enabledCloudPrefixes: [],
