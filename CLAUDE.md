@@ -103,7 +103,9 @@ sent), appends "set the gateway API key in rsd settings (lmgw: Usage → Keys)".
      `startPage` pref (Options → Browsing; empty by default; any path under
      it counts) or Firefox's own `about:newtab`/`about:home` — the hedging is dropped: the prompt says
      flatly that this is the page every new tab opens on, not the subject of the request, and that
-     the first step is `navigate` (`isStartPage` in agent.js). `navigate` waits for the load to actually BEGIN
+     the first step is `navigate` (`isStartPage` in agent.js). A `navigate` to a site that is neither the tab's current one nor
+     approved earlier in the run asks first (`siteOf`/`sameSite`, `approvedSites` per run): the model
+     writes the URL, and a page can steer it into carrying data out. `navigate` waits for the load to actually BEGIN
      (`tabs.update` resolves while the tab still reports the old url as `complete`) before waiting for
      `complete`, and its result tells the model the earlier element ids are now dead. **The loop has no
      step cap**: it streams a note per step and Stop aborts it, so a genuinely long multi-site task is

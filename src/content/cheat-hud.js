@@ -327,7 +327,9 @@
   const host = document.createElement("div");
   host.id = "__rsd-cheat-host";
   host.style.cssText = "position:fixed;top:16px;right:16px;z-index:2147483647;width:340px;";
-  const root = host.attachShadow({ mode: "open" });
+  // Closed: the HUD sits in the page's DOM, and an open root would let the page reach the
+  // ask box and start an LLM run on the user's gateway.
+  const root = host.attachShadow({ mode: "closed" });
   root.innerHTML = `
     <style>
       .panel { font: 12px/1.45 ui-monospace,Menlo,Consolas,monospace; color:#cdd6e0;
@@ -905,7 +907,10 @@
     port.onDisconnect.addListener(() => { port = null; });
   }
 
-  function runGoal() {
+  // Only the user starts a run: a synthetic (page-dispatched) click or Enter is ignored, so a
+  // page can't spend the user's gateway even if it gets hold of the HUD.
+  function runGoal(e) {
+    if (!e || !e.isTrusted) return;
     const goal = askIn.value.trim();
     if (!goal) return;
     if (!port) return setStatus("background not connected — reload the page and reopen the HUD.", true);
@@ -918,7 +923,7 @@
 
   runBtn.onclick = runGoal;
   stopBtn.onclick = stopGoal;
-  askIn.addEventListener("keydown", (e) => { if (e.key === "Enter") runGoal(); });
+  askIn.addEventListener("keydown", (e) => { if (e.key === "Enter") runGoal(e); });
 
   // ---- chrome: expand, minimize, close, drag --------------------------------
   $("[data-expand]").onclick = toggleExpand;

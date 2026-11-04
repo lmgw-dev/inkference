@@ -1,4 +1,16 @@
-# rsd — a local-LLM sidebar and AI dark mode for Firefox
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+    <img src="docs/assets/banner-light.svg" width="960" alt="rsd, a local-LLM sidebar and AI dark mode for Firefox, built for lmgw">
+  </picture>
+</p>
+
+<p align="center">
+  <a href="https://github.com/lmgw-dev/lmgw"><img src="https://img.shields.io/badge/built%20for-lmgw-A56EF6" alt="Built for lmgw"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/Firefox-%E2%89%A5%20115-FF7139?logo=firefoxbrowser&logoColor=white" alt="Firefox 115 or newer">
+  <img src="https://img.shields.io/badge/manifest-V2-informational" alt="Manifest V2">
+</p>
 
 **rsd** is a Firefox extension built for [**lmgw**](https://github.com/lmgw-dev/lmgw), the local
 model gateway. lmgw runs LLMs, TTS and vision models on your own machine. rsd brings them into the
@@ -38,6 +50,12 @@ A chat sidebar (**Ctrl+Shift+L**) with a **Use page** toggle that turns it into 
 current tab. It can *read* the page (summarize, extract, translate, "which of these headlines are
 about AI?") and *operate* it (click, type, select, scroll). With **Go off page** it can also navigate
 for multi-site errands. Clicks that spend money or can't be undone pause for your approval.
+
+> **Prompt injection.** A page can contain text written to steer the agent. To make the obvious
+> leak visible, every `navigate` to a site the task hasn't used yet asks first and shows the full
+> URL. Approve once per site per task. This narrows the risk but doesn't remove it: a page could
+> still get the agent to type things into a form on that same site. Use the agent on pages you'd
+> trust with what's in the conversation.
 
 - **Screen vision.** On canvas/WebGL pages where there's no DOM to read, the agent takes a
   screenshot and clicks by description. lmgw's local vision models (e.g. Gemma) land within a few

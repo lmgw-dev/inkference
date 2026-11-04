@@ -170,12 +170,42 @@ async function execFile(tabId, file) {
 // Cross-origin sheets are unreadable from the page (SecurityError on .cssRules) but the
 // background can fetch them under the host permission; the probe then parses the text into
 // constructed sheets and walks them like the rest.
-async function fetchSheets(hrefs) {
+//
+// The hrefs come from the page, and this fetch runs with the extension's host permission and
+// returns the body to us — so a public page must not be able to point it at the user's LAN or
+// loopback (router, NAS, the lmgw gateway itself). A page that is itself on a private host may
+// load private sheets: that is an intranet site (or the mock: localhost ↔ 127.0.0.1).
+const PRIVATE_SUFFIX = /(^|\.)(localhost|local|internal|lan|home\.arpa)$/i;
+export function isPrivateHost(host) {
+  const h = String(host || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (!h || PRIVATE_SUFFIX.test(h)) return true;
+  const v4 = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const [a, b] = [+v4[1], +v4[2]];
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (h.includes(":")) return h === "::" || h === "::1" || /^f[cd]/.test(h) || /^fe[89ab]/.test(h) || /^::ffff:/.test(h);
+  return false;
+}
+export function sheetAllowed(href, pageUrl) {
+  let u, page;
+  try { u = new URL(href); } catch { return false; }
+  if (!/^https?:$/.test(u.protocol)) return false;
+  if (!isPrivateHost(u.hostname)) return true;
+  try { page = new URL(pageUrl); } catch { return false; }
+  return isPrivateHost(page.hostname);
+}
+
+async function fetchSheets(hrefs, pageUrl) {
   const out = [];
   await Promise.all(
-    hrefs.map(async (href) => {
+    hrefs.filter((href) => sheetAllowed(href, pageUrl)).map(async (href) => {
       try {
         const res = await fetch(href, { credentials: "omit" });
+        // A public href may redirect into the LAN; the request is already sent by then, but the
+        // body of a disallowed final hop is never read. (Firefox hides Location on a manual
+        // redirect, so hops can't be vetted one by one.)
+        if (res.redirected && !sheetAllowed(res.url, pageUrl)) return;
         if (!res.ok) return;
         const ct = res.headers.get("content-type") || "";
         if (ct && !/css|text\/plain|octet-stream/i.test(ct)) return;
@@ -192,7 +222,8 @@ async function probe(tabId) {
   let seam = await execFile(tabId, "/content/restyle-probe.js");
   if (!seam || !seam.ok) throw new Error((seam && seam.reason) || "couldn't read this page's styles");
   if (seam.blockedHrefs && seam.blockedHrefs.length) {
-    const extra = await fetchSheets(seam.blockedHrefs);
+    const tab = await browser.tabs.get(tabId).catch(() => null);
+    const extra = await fetchSheets(seam.blockedHrefs, tab && tab.url);
     if (extra.length) {
       await browser.tabs.executeScript(tabId, { code: "globalThis.__rsdDarkExtraSheets = " + JSON.stringify(extra) + "; true;" });
       const again = await execFile(tabId, "/content/restyle-probe.js");

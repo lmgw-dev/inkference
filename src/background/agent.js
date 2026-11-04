@@ -338,6 +338,17 @@ export function createAgent({ getConfig, emit, readPage, closeConfirm = () => {}
     if (name === "navigate") {
       const url = normalizeUrl(a.url);
       if (!url) return `Error: "${clip(a.url, 80)}" is not a web address I can open. Give a full http(s) URL, e.g. https://duckduckgo.com/?q=macbook+air+2024+part+number.`;
+      // The model writes this URL itself, and the pages it has read can steer what it writes
+      // ("open evil.example/?d=<what you know>"). So a NEW site needs the user's OK, showing the
+      // full URL; the tab's current site and any site approved earlier in this run go through.
+      let here = "";
+      try { here = siteOf((await browser.tabs.get(active.tabId)).url); } catch { /* tab gone: ask */ }
+      const site = siteOf(url);
+      if (!sameSite(site, here) && ![...active.approvedSites].some((s) => sameSite(site, s))) {
+        const approved = await askConfirm(`Open a new site: ${site}?\n${clip(url, 300)}\n\nApproving lets the agent use ${site} for the rest of this task.`);
+        if (!approved) return `User DECLINED opening ${site}. Do not retry it; work with the current site or finish and explain.`;
+        active.approvedSites.add(site);
+      }
       step("act", `navigate → ${clipUrl(url)}`);
       active.observed = false;
       return describeLanding(await navigateTo(active.tabId, url));
@@ -549,7 +560,7 @@ export function createAgent({ getConfig, emit, readPage, closeConfirm = () => {}
     active = {
       controller: new AbortController(), tabId: tab.id, pendingConfirm: null, requests: [], gatesInFlight: 0, patches: [],
       grounding: groundingModel === GROUNDING_SAME ? model : (groundingModel || null), pendingShot: null, shotIndices: [],
-      scriptMode: !!scriptMode, observed: false,
+      scriptMode: !!scriptMode, observed: false, approvedSites: new Set(),
     };
     confirmChain = Promise.resolve();
     await clearMarkers(tab.id); // start clean — any ring still on the page belongs to an older task
@@ -705,6 +716,16 @@ function frameForId(frames, id) {
 // quotes or angle brackets — and reject anything that is not a web page (file:, about:,
 // javascript:, data:, moz-extension:). The only rewrite is adding a missing https:// scheme;
 // the query string is passed through untouched, since the model built it deliberately.
+// "Site" for the navigate gate: the hostname without a leading www. Two hosts are the same site
+// when one is the other or a subdomain of it: www.amazon.com ~ smile.amazon.com, but amazon.de
+// is a new site (one extra click, never a silent pass for an unrelated host).
+export function siteOf(u) {
+  try { return new URL(u).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; }
+}
+export function sameSite(a, b) {
+  return !!a && !!b && (a === b || a.endsWith("." + b) || b.endsWith("." + a));
+}
+
 function normalizeUrl(raw) {
   let s = String(raw == null ? "" : raw).trim().replace(/^[<"']+/, "").replace(/[>"']+$/, "");
   if (!s) return null;
