@@ -1,0 +1,307 @@
+<!doctype html>
+<!-- Mock "infinite video wall" — test bed for per-site CSS/userscripts that hide or move UI
+     overlays sitting on top of videos. Self-contained, works offline. It reproduces what makes
+     real feeds hard:
+       - an INNER scroll container (<main>) below a fixed header; the window never scrolls
+       - virtualized + RECYCLED tiles: a small pool of nodes is re-pointed at new items and moved
+         with transform:translate() inside a tall sizer; more items "load" async near the end
+       - a real <video> (poster drawn on a canvas) in every tile, under overlays: a pointer-events:none
+         gradient scrim, a title/avatar bar, an action rail (data-testid="action-rail", aria-labels
+         Like/Share/Save), an HD/LIVE badge with ONLY hashed classes, and a fully transparent
+         click-catcher <a> over the whole tile (paints nothing)
+       - a SEPARATE top-level sticker layer ("Subscribe") repositioned every frame over every 3rd
+         tile's top-right corner — not a descendant of any tile, so :has()/descendant selectors can't see it
+       - class names hashed per "deploy" (?deploy=N, default 1): same deploy -> same names; data-testid
+         and aria-labels never change.
+       - per-item IDENTITY: every tile carries data-item-id="<slug>" (a content id, unique per clip, the
+         same across deploys) — a selector on its value matches one clip, not a role
+       - one ACTIVE tile (the first fully visible one) gets an extra HASHED class, like a real feed's
+         isActive state — so the active tile is the only element of its exact class list
+       - a duration in each title bar; the active tile's counts down, re-rendered at ~4 Hz (text-only
+         DOM churn — Text-node swaps and .data writes — like a playing clip's countdown)
+       - ?rename=1 is a REDESIGN that renames the stable hooks a saved script relies on: the action
+         rail's data-testid becomes "actions-v2" and the badge's data-k attribute becomes data-kind
+         (everything else, and the per-deploy hashing, stays as it is) — for Script mode's health
+         check and repair
+     Options: ?deploy=N   ?ratio=tall (9:16 tiles)   ?rename=1
+     Debug handle: window.__feed = { deploy, scroller, tilesInDom(), classes, ... } -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mock video feed</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const deploy = Number(q.get("deploy")) || 1;
+  const tall = q.get("ratio") === "tall";
+  const rename = q.get("rename") === "1";
+  const RAIL_ID = rename ? "actions-v2" : "action-rail";
+  const KIND = rename ? "data-kind" : "data-k"; // the badge's one stable hook
+
+  // ---- deterministic hashed class names (one deploy -> one set of names) ----
+  function mulberry32(a) {
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const rnd = mulberry32(deploy * 2654435761);
+  const ALPHA = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const rs = (n) => Array.from({ length: n }, () => ALPHA[Math.floor(rnd() * ALPHA.length)]).join("");
+  const KEYS = ["root", "header", "logo", "scroller", "sizer", "tile", "video", "scrim", "catcher", "meta", "avatar",
+    "title", "rail", "railBtn", "badge", "layer", "sticker", "loading", "tag",
+    "active", "dur"]; // appended last: every name above stays the same for a given deploy
+  const classes = {};
+  KEYS.forEach((k, i) => {
+    classes[k] = i % 2 ? "css-" + rs(6) : ["Tile", "Feed", "Card"][Math.floor(rnd() * 3)] + "_" + ["overlay", "wrap", "inner", "box"][Math.floor(rnd() * 4)] + "__" + rs(5);
+  });
+  const C = classes;
+
+  // ---- stylesheet injected at runtime with the generated names ----
+  const css = `
+    html,body{margin:0;height:100%;overflow:hidden;background:#0b0b0f;color:#eee;font:14px system-ui,sans-serif}
+    .${C.header}{position:fixed;top:0;left:0;right:0;height:56px;box-sizing:border-box;display:flex;align-items:center;gap:16px;padding:0 20px;background:#15151c;border-bottom:1px solid #2a2a35;z-index:50}
+    .${C.logo}{font-weight:700;font-size:18px;letter-spacing:.5px}
+    .${C.tag}{opacity:.6}
+    .${C.scroller}{position:fixed;top:56px;left:0;right:0;bottom:0;overflow:auto;overscroll-behavior:contain}
+    .${C.sizer}{position:relative;width:100%}
+    .${C.tile}{position:absolute;top:0;left:0;border-radius:10px;overflow:hidden;background:#000;will-change:transform}
+    .${C.video}{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;background:#111}
+    .${C.catcher}{position:absolute;inset:0;display:block;background:transparent;border:0;text-decoration:none;color:transparent;z-index:1}
+    .${C.scrim}{position:absolute;left:0;right:0;bottom:0;height:45%;background:linear-gradient(transparent,rgba(0,0,0,.7));pointer-events:none;z-index:2}
+    .${C.meta}{position:absolute;left:10px;bottom:10px;max-width:60%;display:flex;align-items:center;gap:8px;z-index:3}
+    .${C.avatar}{flex:none;width:28px;height:28px;border-radius:50%;border:2px solid #fff;box-sizing:border-box}
+    .${C.title}{display:flex;flex-direction:column;font-size:12px;line-height:1.25;text-shadow:0 1px 2px #000;min-width:0}
+    .${C.title} b{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .${C.rail}{position:absolute;right:8px;bottom:12px;display:flex;flex-direction:column;gap:8px;z-index:3}
+    .${C.railBtn}{width:34px;height:34px;border-radius:50%;border:0;padding:0;background:rgba(0,0,0,.45);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
+    .${C.railBtn} svg{width:18px;height:18px;fill:currentColor}
+    .${C.badge}{position:absolute;top:8px;left:8px;padding:2px 6px;border-radius:4px;background:#e11;color:#fff;font:700 11px system-ui;z-index:3}
+    .${C.badge}[${KIND}=hd]{background:#27c}
+    .${C.layer}{position:fixed;inset:0;pointer-events:none;z-index:40}
+    .${C.sticker}{position:absolute;top:0;left:0;padding:4px 9px;border-radius:12px;background:#f5c518;color:#111;font:700 11px system-ui;pointer-events:auto;cursor:pointer;display:none;will-change:transform}
+    .${C.loading}{position:absolute;left:0;right:0;text-align:center;padding:20px;opacity:.6}
+    .${C.active}{box-shadow:0 0 0 2px rgba(255,255,255,.55)}
+    .${C.dur}{font-variant-numeric:tabular-nums;opacity:.8}
+  `;
+  const style = document.createElement("style");
+  style.textContent = css;
+  document.head.appendChild(style);
+
+  // ---- static shell ----
+  const el = (tag, cls, attrs = {}, parent) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  };
+  const root = el("div", C.root, { "data-testid": "app" }, document.body);
+  const header = el("header", C.header, { "data-testid": "header" }, root);
+  el("span", C.logo, {}, header).textContent = "VidWall";
+  el("span", C.tag, {}, header).textContent = "mock feed · deploy " + deploy + (rename ? " · renamed hooks" : "");
+  const scroller = el("main", C.scroller, { "data-testid": "scroller" }, root);
+  const sizer = el("div", C.sizer, { "data-testid": "sizer" }, scroller);
+  const loadingRow = el("div", C.loading, {}, sizer);
+  loadingRow.textContent = "Loading more…";
+  loadingRow.style.display = "none";
+  const layer = el("div", C.layer, { "data-testid": "sticker-layer" }, document.body); // sibling of the grid, not in any tile
+
+  // ---- data + layout ----
+  const BATCH = 40;
+  let count = BATCH, loading = false, W = 0, cols = 4, tw = 0, th = 0, rowH = 0;
+  const PAD = 16, GAP = 12, BUFFER_ROWS = 1;
+  const NAMES = ["nova.cuts", "Mira Valk", "skate_daily", "OtterLab", "cinder", "Tomo & Co", "lumen.fm", "Hex Garden"];
+  // A content id like a real feed's: words, no digits, unique per item (8·5·7 = 280 combinations
+  // by the CRT, then a fourth word), independent of the deploy.
+  const W1 = ["calm", "brisk", "odd", "lucky", "quiet", "wild", "shy", "bold"], W2 = ["amber", "teal", "rust", "ivory", "slate"];
+  const W3 = ["otter", "heron", "lynx", "gecko", "bison", "koala", "mantis"], W4 = ["", "prime", "nova", "delta", "echo", "flint"];
+  const slugOf = (i) => W1[i % 8] + W2[i % 5] + W3[i % 7] + W4[Math.floor(i / 280) % W4.length];
+  const itemOf = (i) => ({ n: i, hue: (i * 47) % 360, creator: NAMES[i % NAMES.length], title: "Clip #" + i + " — " + ["sunrise timelapse", "kitchen hack", "street run", "tiny robot", "cat vs box"][i % 5], live: i % 7 === 3, slug: slugOf(i), secs: 8 + (i * 13) % 50 });
+  const clock = (s) => Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+
+  function layout() {
+    W = scroller.clientWidth;
+    cols = W >= 1000 ? 4 : W >= 700 ? 3 : 2;
+    tw = (W - PAD * 2 - GAP * (cols - 1)) / cols;
+    th = tall ? tw * 16 / 9 : tw * 9 / 16;
+    rowH = th + GAP;
+    sizer.style.height = Math.ceil(count / cols) * rowH + PAD + 60 + "px";
+    loadingRow.style.top = Math.ceil(count / cols) * rowH + PAD + "px";
+  }
+
+  function poster(it) {
+    const c = document.createElement("canvas");
+    c.width = 160; c.height = tall ? 284 : 90;
+    const g = c.getContext("2d");
+    const grd = g.createLinearGradient(0, 0, c.width, c.height);
+    grd.addColorStop(0, `hsl(${it.hue},70%,45%)`);
+    grd.addColorStop(1, `hsl(${(it.hue + 60) % 360},60%,25%)`);
+    g.fillStyle = grd; g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = "rgba(255,255,255,.85)";
+    g.font = "bold 40px sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText(String(it.n), c.width / 2, c.height / 2);
+    return c.toDataURL("image/png");
+  }
+
+  const ICONS = {
+    Like: "M12 21s-7.5-4.6-9.6-9.2C.9 8.4 2.7 5 6 5c2 0 3.3 1 4 2.2C10.7 6 12 5 14 5c3.3 0 5.1 3.4 3.6 6.8C19.5 16.4 12 21 12 21z",
+    Share: "M14 4l8 7-8 7v-4c-6 0-9 2-11 6 1-7 4-11 11-12z",
+    Save: "M6 3h12v18l-6-4-6 4z",
+  };
+
+  // ---- tile pool: nodes are created once and recycled ----
+  const pool = []; // {node, item|null, parts}
+  function makeTile() {
+    const node = el("div", C.tile, { "data-testid": "tile" }, sizer);
+    node.style.width = tw + "px"; node.style.height = th + "px";
+    const video = el("video", C.video, { muted: "", playsinline: "", preload: "none", "data-testid": "video" }, node);
+    video.muted = true;
+    const catcher = el("a", C.catcher, { "data-testid": "click-catcher", tabindex: "-1" }, node);
+    el("div", C.scrim, { "data-testid": "scrim" }, node);
+    const badge = el("div", C.badge, {}, node); // deliberately NO stable hook
+    const meta = el("div", C.meta, { "data-testid": "meta" }, node);
+    el("span", C.avatar, {}, meta);
+    const title = el("div", C.title, { "data-testid": "title" }, meta);
+    const tb = el("b", "", {}, title), tc = el("span", "", {}, title);
+    const td = el("span", C.dur, { "data-testid": "duration" }, title);
+    td.appendChild(document.createTextNode(""));
+    const rail = el("div", C.rail, { "data-testid": RAIL_ID }, node);
+    for (const name of ["Like", "Share", "Save"]) {
+      const b = el("button", C.railBtn, { "aria-label": name, type: "button" }, rail);
+      b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name]}"/></svg>`;
+    }
+    const t = { node, item: -1, video, catcher, badge, avatar: meta.firstChild, tb, tc, td };
+    pool.push(t);
+    return t;
+  }
+
+  function bind(t, i) {
+    const it = itemOf(i);
+    t.item = i;
+    t.node.dataset.item = i;
+    t.node.dataset.itemId = it.slug;
+    t.td.textContent = clock(it.secs);
+    t.video.poster = poster(it);
+    t.catcher.href = "#clip-" + i;
+    t.badge.textContent = it.live ? "LIVE" : "HD";
+    t.badge.setAttribute(KIND, it.live ? "live" : "hd");
+    t.avatar.style.background = `hsl(${(it.hue + 180) % 360},60%,55%)`;
+    t.tb.textContent = it.title;
+    t.tc.textContent = it.creator;
+    t.node.style.display = "";
+  }
+  function place(t) {
+    const i = t.item, r = Math.floor(i / cols), c = i % cols;
+    t.node.style.width = tw + "px"; t.node.style.height = th + "px";
+    t.node.style.transform = `translate(${PAD + c * (tw + GAP)}px, ${PAD + r * rowH}px)`;
+  }
+
+  function update() {
+    const top = scroller.scrollTop, vh = scroller.clientHeight;
+    const r0 = Math.max(0, Math.floor((top - PAD) / rowH) - BUFFER_ROWS);
+    const r1 = Math.floor((top + vh - PAD) / rowH) + BUFFER_ROWS;
+    const first = r0 * cols, last = Math.min(count - 1, (r1 + 1) * cols - 1);
+    const have = new Map();
+    const free = [];
+    for (const t of pool) {
+      if (t.item >= first && t.item <= last) have.set(t.item, t);
+      else { t.item = -1; free.push(t); }
+    }
+    for (let i = first; i <= last; i++) {
+      let t = have.get(i);
+      if (!t) { t = free.pop() || makeTile(); bind(t, i); }
+      place(t);
+    }
+    for (const t of free) t.node.style.display = "none"; // surplus stays pooled, hidden
+    markActive();
+    if (last >= count - cols * 3) loadMore();
+  }
+
+  // ---- the ACTIVE tile: first fully visible one; its duration counts down like a playing clip ----
+  let active = null, left = 0;
+  function markActive() {
+    const want = Math.max(0, Math.ceil((scroller.scrollTop - PAD) / rowH)) * cols;
+    const t = pool.find((p) => p.item === want) || null;
+    if (t === active) return;
+    if (active) {
+      active.node.classList.remove(C.active);
+      if (active.item >= 0) active.td.textContent = clock(itemOf(active.item).secs);
+    }
+    active = t;
+    if (t) {
+      t.node.classList.add(C.active);
+      left = itemOf(t.item).secs;
+    }
+  }
+  // ~4 Hz like a player's timeupdate: the time re-renders every tick (childList: one Text node
+  // out, one in) and changes once a second (characterData) — text-only churn that never stops.
+  let ticks = 0;
+  setInterval(() => {
+    if (!active || active.item < 0) return;
+    if (++ticks % 4) active.td.textContent = clock(left);
+    else {
+      left = left > 0 ? left - 1 : itemOf(active.item).secs; // loops, like an autoplaying clip
+      active.td.firstChild.data = clock(left);
+    }
+  }, 250);
+
+  function loadMore() {
+    if (loading) return;
+    loading = true;
+    loadingRow.style.display = "";
+    setTimeout(() => {
+      count += BATCH;
+      loading = false;
+      loadingRow.style.display = "none";
+      layout();
+      update();
+    }, 300);
+  }
+
+  // ---- sticker layer: repositioned every frame over every 3rd tile's top-right corner ----
+  const stickers = [];
+  function frame() {
+    const sr = scroller.getBoundingClientRect();
+    let s = 0;
+    for (const t of pool) {
+      if (t.item < 0 || t.item % 3 !== 0) continue;
+      const r = t.node.getBoundingClientRect();
+      let st = stickers[s++];
+      if (!st) {
+        st = el("div", C.sticker, { "data-testid": "sticker", role: "button", "aria-label": "Subscribe" }, layer);
+        st.textContent = "Subscribe";
+        stickers.push(st);
+      }
+      const x = r.right - 78, y = r.top + 8;
+      const visible = r.top >= sr.top && r.bottom <= sr.bottom + r.height * 0.5 && r.top < sr.bottom - 20;
+      st.style.display = visible ? "block" : "none";
+      st.style.transform = `translate(${x}px, ${y}px)`;
+      st.dataset.item = t.item;
+    }
+    for (; s < stickers.length; s++) stickers[s].style.display = "none";
+    requestAnimationFrame(frame);
+  }
+
+  scroller.addEventListener("scroll", update, { passive: true });
+  addEventListener("resize", () => { layout(); update(); });
+  layout(); update();
+  requestAnimationFrame(frame);
+
+  window.__feed = {
+    deploy, scroller, classes,
+    tilesInDom: () => document.querySelectorAll('[data-testid="tile"]').length,
+    activeItem: () => (active ? active.item : -1),
+    visibleTiles: () => pool.filter((t) => t.item >= 0).length,
+    itemCount: () => count,
+    pooled: () => pool.length,
+  };
+})();
+</script>
+</body>
+</html>

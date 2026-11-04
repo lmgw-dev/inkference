@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="sidebar.css" />
+  </head>
+  <body>
+    <header id="head">
+      <div id="picker"></div>
+    </header>
+
+    <div id="banner" hidden></div>
+
+    <main id="transcript" aria-live="polite"></main>
+
+    <div id="overbudget" hidden></div>
+
+    <footer id="foot">
+      <div id="budget">
+        <div id="budget-bar"><span id="budget-fill"></span></div>
+        <span id="budget-text"></span>
+      </div>
+      <div id="controls">
+        <div id="toggles">
+          <label id="page-toggle" title="Let the model use this tab — read it to answer (summarize, explain), or operate it (click, type, navigate) to carry out your message">
+            <input type="checkbox" id="include-page" />
+            <span id="page-label">Use page</span>
+          </label>
+          <label id="nav-toggle" title="Let it leave this page: navigate to other sites (a search, a product page) to carry out your message. Off, it can only use the tab you are on.">
+            <input type="checkbox" id="allow-nav" />
+            <span id="nav-label">Go off page</span>
+          </label>
+          <label id="script-toggle" title="Build a script for this site with the agent: find the UI sitting on top of the videos and hide, fade or move it. A saved script re-applies on every visit.">
+            <input type="checkbox" id="script-mode" />
+            <span id="script-label">Script</span>
+          </label>
+        </div>
+        <div id="ctl-buttons">
+          <button id="pick-btn" hidden title="Point at an element in the page (click it; Esc cancels). A reference like [p1: …] goes into your message.">Pick</button>
+          <button id="script-btn" hidden title="Open the Script panel: the draft's rules, its last test, and the scripts saved for this site">Script…</button>
+          <button id="tokenize-btn" title="Count this page's tokens with the gateway tokenizer">Tokenize</button>
+          <button id="new-btn" title="New chat">New</button>
+        </div>
+      </div>
+      <div id="tokenize-result" hidden></div>
+      <div id="composer">
+        <textarea id="input" rows="3" placeholder="Ask anything…  (Enter to send, Shift+Enter for newline)"></textarea>
+        <div id="send-row">
+          <button id="send-btn">Send</button>
+          <button id="stop-btn" hidden>Stop</button>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Read-aloud panel: a view over the chat, opened from the context menu. Shows exactly
+         what will be spoken, with each cleanup rule as its own switch. -->
+    <section id="reader" hidden>
+      <header id="reader-head">
+        <strong>Read aloud</strong>
+        <span id="reader-source"></span>
+        <button id="reader-close" title="Back to chat (Esc)">✕</button>
+      </header>
+
+      <div id="reader-body">
+        <div id="reader-error" hidden></div>
+        <label class="rd-legend" for="reader-text">This is what gets spoken — edit it freely</label>
+        <textarea id="reader-text" rows="9" spellcheck="false"></textarea>
+        <div id="reader-stats"></div>
+
+        <details class="rd-section" open>
+          <summary>Clean up</summary>
+          <div id="reader-rules"></div>
+          <div class="rd-row">
+            <button id="reader-reset" title="Re-derive from the original selection, dropping your edits">Reset text</button>
+            <span class="rd-note">Toggling a rule re-derives from the original selection.</span>
+          </div>
+        </details>
+
+        <details class="rd-section">
+          <summary>Voice</summary>
+          <label class="rd-field"><span>Model</span><select id="reader-model"></select></label>
+          <label class="rd-field"><span>Voice</span><input type="text" id="reader-voice-name" placeholder="preset name (not a path)" /></label>
+          <label class="rd-field"><span>Speed</span><input type="number" id="reader-speed" min="0.5" max="2" step="0.05" /></label>
+          <div class="rd-note">Shared with the extension's options page.</div>
+        </details>
+      </div>
+
+      <footer id="reader-foot">
+        <button id="reader-play">▶ Read aloud</button>
+        <button id="reader-stop" hidden>■ Stop</button>
+        <span id="reader-progress"></span>
+      </footer>
+    </section>
+
+    <!-- Script panel: the draft the agent and the user build together (rules, live match
+         counts, last test) and the scripts saved for this site. A view over the chat, like the
+         reader; it re-renders from the background's SCRIPT_STATE and keeps no state itself. -->
+    <section id="script" hidden>
+      <header id="script-head">
+        <strong>Script</strong>
+        <span id="script-source"></span>
+        <button id="script-close" title="Back to chat (Esc)">✕</button>
+      </header>
+
+      <div id="script-body">
+        <div id="script-error" hidden></div>
+
+        <div id="script-empty" class="rd-note">
+          No draft. Tick <b>Use page</b> + <b>Script</b> and tell the agent what bothers you on
+          this site, or <b>Pick</b> an element first.
+        </div>
+
+        <div id="script-draft" hidden>
+          <div id="script-where" class="rd-note"></div>
+          <label class="rd-field"><span>Name</span><input type="text" id="script-name" /></label>
+          <label class="rd-field"><span>Match</span><input type="text" id="script-match" placeholder="https://example.com/*" title="Match patterns, separated by spaces" /></label>
+          <div id="script-match-warn" class="sc-problem" hidden></div>
+          <div id="script-sheet-error" class="sc-problem" hidden></div>
+          <div class="sc-legend">Rules <span class="rd-note">— selector and params are editable; counts are what each rule matches right now</span></div>
+          <div id="script-rules"></div>
+          <div id="script-picks"></div>
+          <div id="script-test"></div>
+          <details class="rd-section">
+            <summary>Compiled CSS</summary>
+            <pre id="script-css"></pre>
+          </details>
+        </div>
+
+        <details class="rd-section" id="script-saved-box" open>
+          <summary>Saved for this site</summary>
+          <div id="script-saved"></div>
+        </details>
+      </div>
+
+      <footer id="script-foot">
+        <button id="script-retest" title="Reload the page with the draft and scroll, measuring every rule">Re-test</button>
+        <button id="script-save" title="Save the draft — it re-applies on every visit">Save</button>
+        <button id="script-discard" title="Drop the draft and its live changes">Discard</button>
+        <span id="script-status"></span>
+      </footer>
+    </section>
+
+    <script type="module" src="sidebar.js"></script>
+  </body>
+</html>

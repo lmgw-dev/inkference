@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetGear-ish Admin — Mock Device</title>
+<style>
+  :root { --bg:#0f1720; --card:#17222e; --line:#2a3a49; --ink:#dce6ef; --muted:#8aa0b3; --accent:#3d8bfd; --lock:#3a2a2a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); background:#12191f; }
+  header h1 { margin:0; font-size:18px; } header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  main { max-width:760px; margin:0 auto; padding:24px; display:grid; gap:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 20px; }
+  .card h2 { margin:0 0 2px; font-size:16px; }
+  .hint { color:var(--muted); font-size:13px; margin:0 0 14px; }
+  .row { display:grid; grid-template-columns:180px 1fr; gap:12px; align-items:center; margin:10px 0; }
+  label { color:var(--muted); font-size:14px; }
+  input { width:100%; padding:8px 10px; border-radius:6px; border:1px solid var(--line); background:#0e1620; color:var(--ink); font:inherit; }
+  input:disabled { background:var(--lock); color:#9a8; cursor:not-allowed; opacity:.65; }
+  input[readonly] { background:#241f14; }
+  .locked-tag { font-size:11px; color:#e0a34a; border:1px solid #6a4e22; border-radius:4px; padding:1px 6px; margin-left:8px; }
+  button { margin-top:14px; padding:9px 16px; border:0; border-radius:6px; background:var(--accent); color:#fff; font:inherit; font-weight:600; cursor:pointer; }
+  .prompt { margin-top:12px; font-size:12px; color:var(--muted); border-top:1px dashed var(--line); padding-top:10px; }
+  .prompt code { color:#bcd; background:#0e1620; padding:1px 5px; border-radius:4px; }
+  .out { margin-top:12px; font:12px/1.4 ui-monospace, monospace; white-space:pre-wrap; color:#9fd4a6; min-height:1em; }
+  .out.err { color:#e88; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙︎ Mock Device Admin</h1>
+  <p>A pretend router UI whose fields are locked client-side, for testing the agent's unlock → verify → patch loop. Watch the <code>npm run mock</code> terminal to see what each Save actually sent.</p>
+</header>
+<main>
+
+  <!-- Scenario A — cosmetic lock: the field is just disabled, so the browser omits it from the
+       form body. Unlocking it is the whole fix; the device accepts whatever arrives. -->
+  <section class="card">
+    <h2>LAN — address range <span class="locked-tag">tier-locked</span></h2>
+    <p class="hint">The start address is greyed out in this firmware tier. It's a plain disabled field: a disabled control isn't included in the form the page submits, so just unlocking it is enough — the value then rides along.</p>
+    <form id="lanForm" onsubmit="return false">
+      <div class="row"><label for="lan_start">LAN IP range start</label><input id="lan_start" name="lan_start" value="192.168.1.100" disabled></div>
+      <div class="row"><label for="lan_end">LAN IP range end</label><input id="lan_end" name="lan_end" value="192.168.1.200"></div>
+    </form>
+    <button type="button" onclick="saveLan()">Save LAN settings</button>
+    <div class="out" id="lanOut"></div>
+    <p class="prompt">Try: <code>Change the LAN IP range start to 10.0.0.1 — it's greyed out, unlock it and save.</code></p>
+  </section>
+
+  <!-- Scenario B — the page STRIPS it: the save handler builds its JSON from a fixed schema and
+       never reads pool_end, so unlocking + typing isn't enough. patch_request must re-inject it. -->
+  <section class="card">
+    <h2>DHCP — address pool <span class="locked-tag">tier-locked</span></h2>
+    <p class="hint">The pool end is locked, and this page is sneakier: even after you unlock and type, its Save handler builds the request from a fixed field list that omits the pool end. The value never reaches the device until it's injected into the outgoing request.</p>
+    <div class="row"><label for="lease_hours">Lease (hours)</label><input id="lease_hours" value="24"></div>
+    <div class="row"><label for="pool_end">DHCP pool end</label><input id="pool_end" value="192.168.1.150" disabled></div>
+    <button type="button" onclick="saveDhcp()">Save DHCP settings</button>
+    <div class="out" id="dhcpOut"></div>
+    <p class="prompt">Try: <code>Set the DHCP pool end to 192.168.1.250 and make sure it actually saves.</code></p>
+  </section>
+
+  <!-- Scenario C — enforced on the DEVICE: the value is sent faithfully, but the backend rejects
+       out-of-range values (400). Nothing client-side can win — the honest verdict. Also a
+       "controlled" input (state tracked via input events), so it only updates if type() dispatches. -->
+  <section class="card">
+    <h2>WAN — MTU <span class="locked-tag">tier-locked</span></h2>
+    <p class="hint">MTU is locked at 1500. Here the page sends whatever you set faithfully — but the device itself refuses anything above 1500. This is the case the agent should be able to prove is real, not just a UI trick.</p>
+    <div class="row"><label for="wan_mtu">WAN MTU</label><input id="wan_mtu" value="1500" disabled></div>
+    <button type="button" onclick="saveWan()">Save WAN settings</button>
+    <div class="out" id="wanOut"></div>
+    <p class="prompt">Try: <code>Set the WAN MTU to 9000 and save it.</code> (the device should reject it)</p>
+  </section>
+
+</main>
+<script>
+  function show(id, ok, text) {
+    const el = document.getElementById(id);
+    el.className = "out" + (ok ? "" : " err");
+    el.textContent = text;
+  }
+  function post(url, headers, body) {
+    return fetch(url, { method: "POST", headers, body })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+  }
+
+  // A — native serialization: FormData drops disabled fields, so this omits lan_start until unlocked.
+  function saveLan() {
+    const body = new URLSearchParams(new FormData(document.getElementById("lanForm")));
+    post("/api/save/lan", { "Content-Type": "application/x-www-form-urlencoded" }, body.toString())
+      .then((r) => show("lanOut", r.status === 200, `HTTP ${r.status} — device saved: ${JSON.stringify(r.body.saved || r.body)}`))
+      .catch((e) => show("lanOut", false, "network error: " + e.message));
+  }
+
+  // B — fixed schema that never reads pool_end: the "app strips the field" case.
+  function saveDhcp() {
+    const payload = { lease_hours: document.getElementById("lease_hours").value };
+    // NOTE: pool_end is deliberately NOT read here — the vendor's page omits the locked field.
+    post("/api/save/dhcp", { "Content-Type": "application/json" }, JSON.stringify(payload))
+      .then((r) => show("dhcpOut", r.status === 200, `HTTP ${r.status} — device saved: ${JSON.stringify(r.body.saved || r.body)}`))
+      .catch((e) => show("dhcpOut", false, "network error: " + e.message));
+  }
+
+  // C — controlled input + device-side enforcement.
+  const wanState = { mtu: "1500" };
+  document.getElementById("wan_mtu").addEventListener("input", (e) => { wanState.mtu = e.target.value; });
+  function saveWan() {
+    post("/api/save/wan", { "Content-Type": "application/json" }, JSON.stringify({ mtu: wanState.mtu }))
+      .then((r) => show("wanOut", r.status === 200, `HTTP ${r.status} — ` + (r.status === 200 ? `device saved: ${JSON.stringify(r.body.saved)}` : `device refused: ${r.body.error}`)))
+      .catch((e) => show("wanOut", false, "network error: " + e.message));
+  }
+</script>
+</body>
+</html>

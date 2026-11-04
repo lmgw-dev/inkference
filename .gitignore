@@ -1,0 +1,8 @@
+node_modules/
+dist/
+web-ext-artifacts/
+*.xpi
+.env
+.env.*
+src/.amo-upload-uuid
+.claude/

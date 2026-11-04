@@ -1,0 +1,66 @@
+{
+  "manifest_version": 2,
+  "name": "rsd",
+  "version": "0.7.0",
+  "description": "Page-aware LLM sidebar + context actions via the lmgw gateway",
+  "homepage_url": "https://github.com/lmgw-dev/rsd-firefox",
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "rsd@danzicchi",
+      "strict_min_version": "115.0"
+    }
+  },
+
+  "background": {
+    "page": "background/background.html",
+    "persistent": true
+  },
+
+  "sidebar_action": {
+    "default_title": "rsd",
+    "default_panel": "sidebar/sidebar.html",
+    "browser_style": false,
+    "default_icon": { "48": "icons/icon-48.png", "96": "icons/icon-96.png" }
+  },
+
+  "browser_action": {
+    "default_title": "AI dark mode — click: toggle · right-click: recompile / forget",
+    "default_icon": { "48": "icons/icon-48.png", "96": "icons/icon-96.png" }
+  },
+
+  "page_action": {
+    "default_title": "rsd script",
+    "default_icon": { "48": "icons/icon-48.png", "96": "icons/icon-96.png" }
+  },
+
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+
+  "commands": {
+    "_execute_sidebar_action": {
+      "suggested_key": { "default": "Ctrl+Shift+L" }
+    },
+    "toggle-cheat-hud": {
+      "suggested_key": { "default": "Ctrl+Shift+G" },
+      "description": "Toggle the Cheat Lab HUD on the current page"
+    }
+  },
+
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "menus",
+    "storage",
+    "notifications",
+    "webNavigation",
+    "webRequest",
+    "webRequestBlocking",
+    "http://127.0.0.1:8001/*",
+    "<all_urls>"
+  ],
+
+  "icons": { "48": "icons/icon-48.png", "96": "icons/icon-96.png" }
+}

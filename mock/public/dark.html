@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- AI dark mode test page. Its stylesheet is loaded CROSS-ORIGIN on purpose: the page is
+     served from localhost, the sheet from 127.0.0.1, so document.styleSheets[i].cssRules
+     throws a SecurityError in the probe and the background has to fetch the sheet itself and
+     hand the text back (content/restyle-probe.js `__rsdDarkExtraSheets`). A light page with
+     light cards, a tinted notice, a token-themed footer and an inline-styled badge — the
+     shapes the compiler has to get right. Run:
+       npm run mock  &  npm run dark-check -- http://localhost:8088/dark.html -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dark-mode mock: cross-origin stylesheet</title>
+<link rel="stylesheet" href="http://127.0.0.1:8088/dark-remote.css">
+<style>
+  /* same-origin part: tokens on :root, consumed by the footer */
+  :root { --paper: #ffffff; --ink: #1b1b1b; --line: #dddddd; --footer-bg: var(--paper); }
+  footer { background: var(--footer-bg); color: var(--ink); border-top: 1px solid var(--line); padding: 16px; }
+</style>
+</head>
+<body>
+  <header><h1>Dark-mode mock</h1><nav><a href="#">Home</a> <a href="#">Docs</a> <a href="#">About</a></nav></header>
+  <main>
+    <section class="card"><h2>A white card</h2><p>Body copy in near-black on white. <a href="#">A link</a>.</p>
+      <span class="badge" style="background:#ffd54f;color:#333">inline-styled badge</span></section>
+    <section class="card card--alt"><h2>A light grey card</h2><p>Muted text on a light grey surface.</p></section>
+    <aside class="notice">A pale yellow notice — a tint the compiler should keep warm, not flatten to grey.</aside>
+    <form><label>Search <input type="search" placeholder="type here"></label> <button type="button">Go</button></form>
+  </main>
+  <footer>Footer themed through custom properties.</footer>
+</body>
+</html>

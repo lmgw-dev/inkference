@@ -1,0 +1,10 @@
+{
+  "name": "mock feed: clear the video wall",
+  "rules": [
+    { "id": "rail", "selector": "[data-testid=\"action-rail\"]", "action": "hide", "why": "Like/Share/Save rail over the right edge" },
+    { "id": "title", "selector": "[data-testid=\"meta\"]", "action": "hide-until-hover", "params": { "hover": "[data-testid=\"tile\"]" }, "why": "title + avatar bar, back on hover" },
+    { "id": "badge", "selector": "div[data-k]", "action": "hide", "why": "HD/LIVE badge — hashed classes only, data-k is its one stable hook" },
+    { "id": "scrim", "selector": "[data-testid=\"scrim\"]", "action": "click-through", "why": "keeps the gradient, never eats a click" },
+    { "id": "stickers", "selector": "[data-testid=\"sticker\"]", "action": "hide", "why": "Subscribe stickers in their own layer outside the tiles" }
+  ]
+}

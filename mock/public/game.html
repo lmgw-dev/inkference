@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Star Hauler — canvas mock</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1020; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Pure-canvas mock "game" for the page agent's screen-vision tools (screenshot/click_screen).
+// NOTHING here is DOM — no buttons, no text nodes — so observe/read_page see an empty page and
+// the agent can only act by looking at pixels. Buttons are hit-tested from raw click
+// coordinates, exactly like a real canvas/WebGL game, so a click only works if the grounded
+// point actually lands inside the drawn button.
+//
+// State to cheat/verify against: credits tick up slowly, "Collect Ore" (bottom left) adds 15,
+// "Buy Engine Upgrade" (top right) costs 100 and increments the engine count. The click log
+// (bottom right) shows the last click's coordinates — handy for judging how far off a
+// grounding model landed.
+const c = document.getElementById("c");
+const ctx = c.getContext("2d");
+let credits = 120, engines = 0, lastClick = null, flash = 0;
+
+const BTN = {
+  buy:     { label: "Buy Engine Upgrade", place: (w) => ({ x: w - 240, y: 24, w: 216, h: 48 }) },
+  collect: { label: "Collect Ore",        place: (w, h) => ({ x: 24, y: h - 72, w: 170, h: 48 }) },
+};
+
+function rects() {
+  const out = {};
+  for (const [k, b] of Object.entries(BTN)) out[k] = { ...b.place(innerWidth, innerHeight), label: b.label };
+  return out;
+}
+
+function resize() {
+  c.width = Math.round(innerWidth * devicePixelRatio);
+  c.height = Math.round(innerHeight * devicePixelRatio);
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); // draw in CSS px
+}
+
+function button(r, enabled) {
+  ctx.fillStyle = enabled ? "#2b6cb0" : "#3a4358";
+  ctx.strokeStyle = "#9db3d8";
+  ctx.beginPath();
+  ctx.roundRect(r.x, r.y, r.w, r.h, 8);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = enabled ? "#fff" : "#98a0b3";
+  ctx.font = "600 16px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(r.label, r.x + r.w / 2, r.y + r.h / 2);
+}
+
+function draw() {
+  const w = innerWidth, h = innerHeight;
+  ctx.fillStyle = "#0b1020";
+  ctx.fillRect(0, 0, w, h);
+  // starfield (deterministic, so screenshots are stable between frames)
+  ctx.fillStyle = "#2c3654";
+  for (let i = 0; i < 120; i++) ctx.fillRect((i * 97) % w, (i * 61) % h, 2, 2);
+
+  ctx.fillStyle = "#e8ecf5";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = "700 28px system-ui, sans-serif";
+  ctx.fillText("STAR HAULER", 24, 48);
+  ctx.font = "600 20px system-ui, sans-serif";
+  ctx.fillText(`Credits: ${Math.floor(credits)}`, 24, 88);
+  ctx.fillText(`Engines: ${engines}`, 24, 118);
+
+  const r = rects();
+  button(r.buy, credits >= 100);
+  button(r.collect, true);
+
+  if (flash > 0) {
+    ctx.fillStyle = `rgba(120, 220, 140, ${Math.min(flash, 1)})`;
+    ctx.font = "600 18px system-ui, sans-serif";
+    ctx.fillText(flashText, 24, 152);
+    flash -= 0.02;
+  }
+  if (lastClick) {
+    ctx.fillStyle = "#8892ab";
+    ctx.font = "13px ui-monospace, monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(`last click: (${lastClick.x}, ${lastClick.y})${lastClick.hit ? " → " + lastClick.hit : " → missed"}`, w - 24, h - 16);
+    // a crosshair where the click landed, to eyeball grounding accuracy
+    ctx.strokeStyle = "#e6b450";
+    ctx.beginPath();
+    ctx.moveTo(lastClick.x - 8, lastClick.y); ctx.lineTo(lastClick.x + 8, lastClick.y);
+    ctx.moveTo(lastClick.x, lastClick.y - 8); ctx.lineTo(lastClick.x, lastClick.y + 8);
+    ctx.stroke();
+  }
+}
+
+let flashText = "";
+function note(t) { flashText = t; flash = 2.5; }
+
+c.addEventListener("click", (e) => {
+  const box = c.getBoundingClientRect();
+  const x = Math.round(e.clientX - box.left), y = Math.round(e.clientY - box.top);
+  const r = rects();
+  const inside = (b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+  let hit = null;
+  if (inside(r.collect)) { hit = "Collect Ore"; credits += 15; note("+15 credits"); }
+  else if (inside(r.buy)) {
+    hit = "Buy Engine Upgrade";
+    if (credits >= 100) { credits -= 100; engines += 1; note("Engine installed!"); }
+    else note("Not enough credits");
+  }
+  lastClick = { x, y, hit };
+});
+
+addEventListener("resize", resize);
+resize();
+(function tick() { credits += 0.02; draw(); requestAnimationFrame(tick); })();
+</script>
+</body>
+</html>

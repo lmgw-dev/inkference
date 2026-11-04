@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>rsd — options</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 14px/1.5 system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+      h1 { font-size: 1.3rem; }
+      h2 { font-size: 1.05rem; margin: 2.2rem 0 .4rem; padding-top: 1.2rem; border-top: 1px solid #8883; }
+      label { display: block; margin: 1.1rem 0 .3rem; font-weight: 600; }
+      input[type="text"], input[type="url"], input[type="password"], textarea, select { width: 100%; padding: .5rem; font: inherit;
+        box-sizing: border-box; }
+      textarea { resize: vertical; }
+      .hint { color: #888; font-size: .85em; margin-top: .2rem; }
+      .row { display: flex; gap: .5rem; align-items: center; }
+      button { font: inherit; padding: .45rem 1rem; cursor: pointer; }
+      #status { margin-left: .5rem; font-size: .9em; }
+      .ok { color: #2a9d3f; }
+      .err { color: #c83737; }
+    </style>
+  </head>
+  <body>
+    <h1>rsd settings</h1>
+
+    <label for="gateway">Gateway base URL</label>
+    <div class="row">
+      <input type="url" id="gateway" placeholder="http://127.0.0.1:8001" />
+      <button id="test">Test</button>
+      <span id="status"></span>
+    </div>
+    <div class="hint">OpenAI-compatible lmgw endpoint. <code>/v1/models</code> and
+      <code>/v1/chat/completions</code> are appended automatically. No gateway yet?
+      <a href="https://github.com/lmgw-dev/lmgw" target="_blank" rel="noopener noreferrer">Get lmgw</a>
+      — it runs local models on your own machine. AI dark mode works without it, with a built-in theme.</div>
+
+    <label for="gatewayKey">Gateway API key</label>
+    <input type="password" id="gatewayKey" autocomplete="off" spellcheck="false" />
+    <div class="hint">Required when lmgw has <em>Require API key</em> on; create a client key in lmgw
+      under <em>Usage → Keys</em>. Stored in this browser profile's extension storage.</div>
+
+    <label for="model">Default model</label>
+    <select id="model"></select>
+    <div class="hint">Used when the sidebar hasn't picked one yet. Populated from the gateway.</div>
+
+    <label for="system">System prompt</label>
+    <textarea id="system" rows="5"></textarea>
+
+    <h2>Browsing (page agent)</h2>
+    <div class="hint">Applies when <b>Go off page</b> is ticked in the sidebar.</div>
+
+    <label for="startPage">Start page</label>
+    <input type="text" id="startPage" placeholder="https://… (the page new tabs open on)" />
+    <div class="hint">The URL every new tab opens on. A run that begins here is told outright
+      that this is the dashboard, not the subject of the request, and that its first step is to
+      navigate — otherwise the model reads the dashboard and reports the answer isn't on it.
+      Any path under this URL counts; Firefox's own <code>about:newtab</code> / <code>about:home</code>
+      are always recognized. Leave empty if new tabs open on something you do want read.</div>
+
+    <h2>Screen vision (page agent)</h2>
+    <div class="hint">Lets the page agent handle pages the DOM tools can't drive — canvas/WebGL
+      games and apps whose controls are invisible to <code>observe</code>. When a grounding model
+      is picked, the agent gains two tools: <code>screenshot</code> (the page image is attached to
+      the chat — the <b>default model</b> above must be vision-capable to look at it) and
+      <code>click_screen</code>, which clicks a verbally-described target at the coordinates this
+      model finds. Leave empty to disable both.</div>
+
+    <label for="groundingModel">Grounding model</label>
+    <select id="groundingModel"></select>
+    <div class="hint">Needs a model trained to <em>detect</em> — to return a box for a described
+      object. Gemma 4 and Qwen-VL both are, so <b>same as the chat model</b> is normally right and
+      costs no extra model: measured on <code>mock/game.html</code>, gemma4-12b locates buttons on
+      its own screenshots to within ~5&nbsp;px in ~0.8&nbsp;s, and says so plainly when the target
+      isn't on screen. Small models are noticeably worse (gemma4-e4b: 13–47&nbsp;px, one outright
+      miss), so pick a separate bigger model here if your chat model is small or text-only.
+      Populated by <b>Test</b> above. Run <code>npm run ground-check</code> to measure any model
+      yourself.</div>
+
+    <h2>Read aloud</h2>
+    <div class="hint">Right-click selected text → <em>Ask LLM → Read aloud</em>. The gateway
+      synthesizes the whole selection in one request (<code>/v1/audio/speech</code>) and the
+      extension plays it — one request keeps one voice, at the cost of waiting for the whole
+      clip (roughly half its spoken length). <em>Stop reading</em> appears in the same menu
+      while it talks.</div>
+
+    <label for="ttsModel">Speech model</label>
+    <select id="ttsModel"></select>
+    <div class="hint">lmgw's TTS models (transcription models are filtered out). Populated by
+      <b>Test</b> above.</div>
+
+    <label for="ttsVoice">Voice</label>
+    <input type="text" id="ttsVoice" list="ttsVoices" placeholder="(the model's own voice)" />
+    <datalist id="ttsVoices"></datalist>
+    <div class="hint">A voice <b>name</b>, never a file path: either one the model ships or a
+      preset defined on the model in lmgw (Audio → edit model → Voice presets), which is where a
+      reference clip for voice cloning belongs. The names the gateway advertises for this model
+      are offered as suggestions; an unknown one is rejected by the upstream. Leave it empty to
+      get the model's default preset — without one, a cloning model like fish-audio picks a new
+      random speaker every time you press play.</div>
+
+    <label for="ttsSpeed">Speed</label>
+    <input type="number" id="ttsSpeed" min="0.5" max="2" step="0.05" style="width: 8rem" />
+    <div class="hint">1 = the model's natural pace. Only sent when it isn't 1; not every model
+      honours it.</div>
+
+    <div class="row" style="margin-top: .6rem">
+      <button id="ttsTest">Test voice</button>
+      <span id="ttsStatus"></span>
+    </div>
+
+    <div class="row" style="margin-top: 1.5rem">
+      <button id="save">Save</button>
+      <span id="saved"></span>
+    </div>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
