@@ -17,6 +17,9 @@ npm run lint     # web-ext lint. Prefer: npx web-ext lint --source-dir=src --sel
                  # (addons-linter gates the build — it flags real JS syntax errors node --check misses)
 npm run build    # web-ext build -> dist/inkference-<ver>.zip
 npm run sign -- --api-key=… --api-secret=…   # unlisted AMO signature -> dist/*.xpi (release Firefox runs signed add-ons only)
+# release: push a tag vX.Y.Z -> .github/workflows/release.yml signs (unlisted, AMO secrets) and publishes
+#          a GitHub Release with the XPI + updates.json; version + update_url are injected into a staged
+#          copy of src/, never committed (src/manifest.json's version is not the released one)
 npm run mock     # serve mock/ (a fake locked-down device) on http://localhost:8088 for agent testing
 npm run ground-check -- --model gemma4-12b   # measure a model's screen-vision aim (see feature 1)
 npm run dark-check -- [--model gemma4-12b] <url…>   # measure AI dark mode on real pages (see feature 4)

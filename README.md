@@ -83,6 +83,13 @@ for multi-site errands. Clicks that spend money or can't be undone pause for you
 Inkference talks the OpenAI-compatible API, but it relies on lmgw specifics: model metadata, audio models,
 voice presets, token counting. Other endpoints may partly work. They're not tested.
 
+## Install
+
+Download the latest `inkference-<version>.xpi` from
+[Releases](https://github.com/lmgw-dev/inkference/releases/latest) and open it in Firefox (or
+`about:addons` → gear → *Install Add-on From File*). It's signed by Mozilla and updates itself
+from this repo's releases.
+
 ## Install from source
 
 ```sh
@@ -92,9 +99,18 @@ npm install
 npm run dev     # launches Firefox with a temporary profile and the extension loaded
 ```
 
-Release Firefox only runs signed add-ons. To build your own signed XPI, get AMO API credentials
-(<https://addons.mozilla.org/developers/addon/api/key/>) and run
-`npm run sign -- --api-key=… --api-secret=…`. The result lands in `dist/`.
+Release Firefox only runs signed add-ons. To sign your own build, get AMO API credentials
+(<https://addons.mozilla.org/developers/addon/api/key/>), put them in `.env` as `WEB_EXT_API_KEY` /
+`WEB_EXT_API_SECRET` (gitignored), and run `set -a; . ./.env; set +a; npm run sign`. The result lands
+in `dist/`.
+
+### Releasing
+
+Push a version tag (`git tag v0.8.0 && git push origin v0.8.0`).
+[.github/workflows/release.yml](.github/workflows/release.yml) lints, signs the add-on as unlisted on
+AMO, and publishes a GitHub Release with the XPI and the `updates.json` that installed copies poll. The
+tag is the version and must be higher than every earlier signature. It needs the repository secrets
+`WEB_EXT_API_KEY` / `WEB_EXT_API_SECRET` (`gh secret set -f .env -R lmgw-dev/inkference`).
 
 ## Develop
 

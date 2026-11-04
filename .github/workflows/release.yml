@@ -1,0 +1,87 @@
+# Signed release on a version tag: push `v0.8.0` and this lints, signs the add-on as UNLISTED on
+# AMO (free, not in the public catalogue), and publishes a GitHub Release carrying the signed XPI
+# plus the updates.json that installed copies poll to update themselves.
+#
+# One-time setup: repository secrets WEB_EXT_API_KEY / WEB_EXT_API_SECRET (`gh secret set -f .env`)
+# (https://addons.mozilla.org/developers/addon/api/key/).
+#
+# The tag is the version: AMO refuses a version it has signed before, so it must be higher than
+# every earlier signature. src/manifest.json is not edited in git — version and update_url are
+# spliced into a throwaway copy, so a later LISTED channel (where AMO serves updates and a custom
+# update_url is not allowed) only needs this file changed.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      REPO_URL: https://github.com/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Version from tag
+        id: v
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          # AMO: 1–4 dot-separated integers, no letters or hyphens
+          [[ "$v" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "::error::tag $GITHUB_REF_NAME is not a valid add-on version (vX.Y[.Z[.W]])"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Stage manifest (version + update_url)
+        run: |
+          rm -rf build && mkdir build && cp -r src build/src
+          rm -f build/src/.amo-upload-uuid
+          jq --arg v "${{ steps.v.outputs.version }}" \
+             --arg u "$REPO_URL/releases/latest/download/updates.json" \
+             '.version = $v | .browser_specific_settings.gecko.update_url = $u' \
+             src/manifest.json > build/src/manifest.json
+          jq -r '.name + " " + .version + " · " + .browser_specific_settings.gecko.id' build/src/manifest.json
+
+      # --self-hosted: an update_url is expected here (AMO's lint would flag it for listed add-ons)
+      - run: npx web-ext lint --source-dir=build/src --self-hosted
+
+      - name: Sign (unlisted)
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
+        run: |
+          [ -n "$WEB_EXT_API_KEY" ] && [ -n "$WEB_EXT_API_SECRET" ] || { echo "::error::set the WEB_EXT_API_KEY / WEB_EXT_API_SECRET repository secrets"; exit 1; }
+          npx web-ext sign --channel=unlisted --source-dir=build/src --artifacts-dir=dist --approval-timeout=900000
+
+      - name: Collect XPI + updates.json
+        id: out
+        run: |
+          v="${{ steps.v.outputs.version }}"
+          xpi=$(ls dist/*.xpi | head -n1)
+          [ -n "$xpi" ] || { echo "::error::web-ext produced no .xpi"; exit 1; }
+          mv "$xpi" "dist/inkference-$v.xpi"
+          id=$(jq -r '.browser_specific_settings.gecko.id' src/manifest.json)
+          jq -n --arg id "$id" --arg v "$v" --arg link "$REPO_URL/releases/download/$GITHUB_REF_NAME/inkference-$v.xpi" \
+            '{addons: {($id): {updates: [{version: $v, update_link: $link}]}}}' > dist/updates.json
+          cat dist/updates.json
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ steps.v.outputs.version }}"
+          gh release create "$GITHUB_REF_NAME" "dist/inkference-$v.xpi" dist/updates.json \
+            --title "Inkference $v" --generate-notes
