@@ -91,7 +91,7 @@ createServer(async (req, res) => {
   json(res, 405, { error: "method not allowed" });
 }).listen(PORT, () => {
   console.log(`\nMock locked-down device → http://localhost:${PORT}/\n`);
-  console.log("Open that in the `npm run dev` Firefox, open the rsd sidebar, tick “Use page”, then try:");
+  console.log("Open that in the `npm run dev` Firefox, open the Inkference sidebar, tick “Use page”, then try:");
   console.log('  LAN  (cosmetic lock)   "Change the LAN IP range start to 10.0.0.1 — it\'s greyed out, unlock it and save."');
   console.log('  DHCP (page strips it)  "Set the DHCP pool end to 192.168.1.250 and make sure it actually saves."');
   console.log('  WAN  (device-enforced) "Set the WAN MTU to 9000 and save it."   → device should reject it (400)\n');

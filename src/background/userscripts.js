@@ -369,7 +369,7 @@ function updatePageAction(tabId) {
     parts.push(`"${s.name}" — ${s.rules.length} rule${s.rules.length === 1 ? "" : "s"}${draftNote}`);
   }
   const warn = staleIn(tabId).map((x) => core.fmtStaleTitle(x.script, x.stale));
-  const title = warn.length ? `${warn.join("\n")}\n(rsd script: ${parts.join("; ")})` : `rsd script: ${parts.join("; ")}\nClick to open the Script panel`;
+  const title = warn.length ? `${warn.join("\n")}\n(Inkference script: ${parts.join("; ")})` : `Inkference script: ${parts.join("; ")}\nClick to open the Script panel`;
   quiet(() => browser.pageAction.setTitle({ tabId, title }));
   setIcon(tabId, warn.length > 0);
   quiet(() => browser.pageAction.show(tabId));

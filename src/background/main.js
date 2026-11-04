@@ -263,7 +263,7 @@ function desktopNote(message, detail) {
   browser.notifications
     .create({
       type: "basic",
-      title: "rsd — read aloud",
+      title: "Inkference — read aloud",
       message: detail ? `${message}\n${detail}` : message,
       iconUrl: browser.runtime.getURL("icons/icon-96.png"),
     })

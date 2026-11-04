@@ -241,7 +241,7 @@ export function compileRules(rules, name = "") {
   const errors = [];
   let blocks = 0;
   const label = name ? `: ${commentSafe(name)}` : "";
-  const chunks = [`/* rsd script${label} */`];
+  const chunks = [`/* Inkference script${label} */`];
   for (const r of rules || []) {
     try {
       const out = compileRuleBlocks(r);

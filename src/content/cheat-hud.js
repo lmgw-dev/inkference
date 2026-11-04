@@ -414,7 +414,7 @@
     </style>
     <div class="panel">
       <div class="bar" data-drag>
-        <b>rsd cheat lab</b><span class="sp"></span>
+        <b>Inkference cheat lab</b><span class="sp"></span>
         <button class="x" data-expand title="extended mode — live heap inspector">⤢</button>
         <button class="x" data-min title="collapse">–</button>
         <button class="x" data-close title="close (toggle off)">×</button>

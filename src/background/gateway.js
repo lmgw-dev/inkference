@@ -175,7 +175,7 @@ async function gatewayFailure(res, headline, gatewayKey) {
   }
   let line = msg ? `${headline}: ${msg}` : `${headline} (HTTP ${res.status})`;
   if (res.status === 401 && (code === "auth" || !String(gatewayKey || "").trim() || !msg)) {
-    line = `${msg ? line : `${headline}: unauthorized`} — set the gateway API key in rsd settings (lmgw: Usage → Keys)`;
+    line = `${msg ? line : `${headline}: unauthorized`} — set the gateway API key in Inkference settings (lmgw: Usage → Keys)`;
   }
   return new GatewayError(line, text, res.status);
 }

@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-    <img src="docs/assets/banner-light.svg" width="960" alt="rsd, a local-LLM sidebar and AI dark mode for Firefox, built for lmgw">
+    <img src="docs/assets/banner-light.svg" width="960" alt="Inkference: AI dark mode and a sidebar agent, built for lmgw">
   </picture>
 </p>
 
@@ -12,14 +12,16 @@
   <img src="https://img.shields.io/badge/manifest-V2-informational" alt="Manifest V2">
 </p>
 
-**rsd** is a Firefox extension built for [**lmgw**](https://github.com/lmgw-dev/lmgw), the local
-model gateway. lmgw runs LLMs, TTS and vision models on your own machine. rsd brings them into the
+**Inkference** is a Firefox extension built for [**lmgw**](https://github.com/lmgw-dev/lmgw), the local
+model gateway. lmgw runs LLMs, TTS and vision models on your own machine. Inkference brings them into the
 browser: a sidebar agent that reads and operates the page you're on, right-click actions, read-aloud
 and a dark mode that designs a theme for each site.
 
 Nothing leaves your machine unless you point lmgw at a cloud model.
 
-> **Just want a better dark mode?** That part works with no LLM at all. Install rsd, click the
+*Ink + inference: a model infers the ink each page needs.*
+
+> **Just want a better dark mode?** That part works with no LLM at all. Install Inkference, click the
 > toolbar button, done. Connect lmgw later and every site gets a theme designed for it.
 
 ## What it does
@@ -27,7 +29,7 @@ Nothing leaves your machine unless you point lmgw at a cloud model.
 ### AI dark mode (works without an LLM)
 A toolbar button that **compiles** a dark theme per site, caches it, and re-applies it instantly on
 every later visit. Most dark-mode extensions invert colours or apply one filter to everything.
-rsd works differently:
+Inkference works differently:
 
 1. It **probes** every colour rule the page's stylesheets set, with its selector and media query
    (cross-origin sheets included).
@@ -78,14 +80,14 @@ for multi-site errands. Clicks that spend money or can't be undone pause for you
   at `http://127.0.0.1:8001` by default (Options → Gateway base URL). If lmgw has *Require API key*
   on, create a client key under *Usage → Keys* and enter it in the options page.
 
-rsd talks the OpenAI-compatible API, but it relies on lmgw specifics: model metadata, audio models,
+Inkference talks the OpenAI-compatible API, but it relies on lmgw specifics: model metadata, audio models,
 voice presets, token counting. Other endpoints may partly work. They're not tested.
 
 ## Install from source
 
 ```sh
-git clone https://github.com/lmgw-dev/rsd-firefox.git
-cd rsd-firefox
+git clone https://github.com/lmgw-dev/inkference.git
+cd inkference
 npm install
 npm run dev     # launches Firefox with a temporary profile and the extension loaded
 ```

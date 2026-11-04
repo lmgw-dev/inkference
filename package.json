@@ -1,14 +1,14 @@
 {
-  "name": "rsd-firefox",
+  "name": "inkference",
   "version": "0.6.0",
   "type": "module",
   "private": true,
   "description": "Page-aware LLM sidebar + right-click actions for the lmgw gateway (Firefox MV2)",
   "license": "MIT",
-  "homepage": "https://github.com/lmgw-dev/rsd-firefox",
+  "homepage": "https://github.com/lmgw-dev/inkference",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lmgw-dev/rsd-firefox.git"
+    "url": "git+https://github.com/lmgw-dev/inkference.git"
   },
   "scripts": {
     "vendor": "esbuild @mozilla/readability --bundle --format=iife --global-name=Readability --outfile=src/vendor/readability.js && esbuild marked --bundle --format=esm --outfile=src/vendor/marked.js && esbuild dompurify --bundle --format=esm --outfile=src/vendor/dompurify.js",

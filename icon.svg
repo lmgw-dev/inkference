@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
-  <rect width="96" height="96" rx="20" fill="#1e1e22"/>
-  <rect x="8" y="8" width="80" height="80" rx="14" fill="none" stroke="#7aa2f7" stroke-width="3"/>
-  <text x="48" y="60" font-family="system-ui, sans-serif" font-size="34" font-weight="700"
-        text-anchor="middle" fill="#7aa2f7">rsd</text>
-  <circle cx="74" cy="24" r="7" fill="#9ece6a"/>
-</svg>

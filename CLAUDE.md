@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-A personal Firefox **Manifest V2** extension that bridges the browser to the self-hosted **lmgw**
+**Inkference** (formerly rsd), a Firefox **Manifest V2** extension that bridges the browser to the self-hosted **lmgw**
 LLM gateway (default `http://127.0.0.1:8001`, OpenAI/Anthropic-compatible). No build/transpile step
 for the extension itself — `src/` ships as-is and the browser runs the ES modules directly.
 
@@ -15,7 +15,7 @@ npm run vendor   # bundle @mozilla/readability (IIFE) + marked/dompurify (ESM) i
 npm run dev      # web-ext run: launches Firefox with a temp profile + auto-reload. Sidebar: Ctrl+Shift+L
 npm run lint     # web-ext lint. Prefer: npx web-ext lint --source-dir=src --self-hosted
                  # (addons-linter gates the build — it flags real JS syntax errors node --check misses)
-npm run build    # web-ext build -> dist/rsd-<ver>.zip
+npm run build    # web-ext build -> dist/inkference-<ver>.zip
 npm run sign -- --api-key=… --api-secret=…   # unlisted AMO signature -> dist/*.xpi (release Firefox runs signed add-ons only)
 npm run mock     # serve mock/ (a fake locked-down device) on http://localhost:8088 for agent testing
 npm run ground-check -- --model gemma4-12b   # measure a model's screen-vision aim (see feature 1)
@@ -74,7 +74,7 @@ pref is empty) — lmgw answers 401 without a key once "Require API key" is on. 
 pref (Options → under the base URL), threaded next to `gatewayUrl` everywhere, **never** in `snapshot()` or
 any port message; changing it reloads the model list like a URL change. Non-ok responses go through
 `gatewayFailure`, which promotes lmgw's `error.message` into the headline and, for code `auth` (or no key
-sent), appends "set the gateway API key in rsd settings (lmgw: Usage → Keys)".
+sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → Keys)".
 - `streamChat` — SSE chat (the normal sidebar reply path).
 - `chatWithTools` — one **non-streaming** tool-calling turn. Non-streaming on purpose: weak local
   models emit cleaner `tool_calls` without streamed reassembly. This is why the page agent's final
