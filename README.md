@@ -28,8 +28,7 @@ Nothing leaves your machine unless you point lmgw at a cloud model.
 
 ### AI dark mode (works without an LLM)
 A toolbar button that **compiles** a dark theme per site, caches it, and re-applies it instantly on
-every later visit. Most dark-mode extensions invert colours or apply one filter to everything.
-Inkference works differently:
+every later visit. It works like this:
 
 1. It **probes** every colour rule the page's stylesheets set, with its selector and media query
    (cross-origin sheets included).
@@ -46,6 +45,33 @@ site ships its own dark theme (Stack Overflow), the model finds the hook and use
 
 Right-click the button to recompile or forget a site. `npm run dark-check -- <url>` measures it on
 any page.
+
+#### How it compares
+
+Dark Reader is the reference here, and it's excellent. Inkference makes different trade-offs:
+
+- **It checks its own work.** The share of the viewport that still reads light is measured before
+  and after, and shown in the tooltip. If a strategy didn't take, it switches to another one by
+  itself.
+- **It uses the site's own dark theme when there is one.** A root class backing hundreds of rules
+  (`body.theme-dark` on Stack Overflow) or `light-dark()` colours (MDN) are switched on as the
+  designers built them, instead of being imitated.
+- **Colours change by role, not by formula.** Backgrounds, text, borders and accents are mapped
+  separately and accents keep their hue. A CSS variable that is a background in one section and text
+  in another is detected and rewritten where it's used, so it isn't inverted half the time.
+- **Nothing keeps running in the page.** The theme is compiled once per site into a plain user
+  stylesheet that Firefox applies like any other CSS. There's no observer re-colouring the page as
+  it changes, so a long feed or a busy web app costs no extra script work.
+- **The AI part is optional and local.** Without an LLM the built-in theme is used. With lmgw the
+  plan is designed per site by a model on your own machine.
+
+Where Dark Reader is ahead:
+
+- **Pages that restyle themselves later.** Dark Reader follows changes live. Inkference compiles
+  once, so content a site adds with new styles afterwards can stay light (right-click → recompile).
+- **Controls.** No brightness, contrast, sepia or font sliders per site yet. It's on or off.
+- **Maturity and reach.** Years of community site fixes, more browsers, more refined handling of
+  images and SVG. Inkference is new and Firefox-only for now.
 
 ### Page-aware sidebar (needs lmgw)
 A chat sidebar (**Ctrl+Shift+L**) with a **Use page** toggle that turns it into an agent for the
