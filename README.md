@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://github.com/lmgw-dev/lmgw"><img src="https://img.shields.io/badge/built%20for-lmgw-A56EF6" alt="Built for lmgw"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/Firefox-%E2%89%A5%20115-FF7139?logo=firefoxbrowser&logoColor=white" alt="Firefox 115 or newer">
+  <img src="https://img.shields.io/badge/Firefox-%E2%89%A5%20140-FF7139?logo=firefoxbrowser&logoColor=white" alt="Firefox 140 or newer">
   <img src="https://img.shields.io/badge/manifest-V2-informational" alt="Manifest V2">
 </p>
 
@@ -101,7 +101,7 @@ for multi-site errands. Clicks that spend money or can't be undone pause for you
 
 ## Requirements
 
-- Firefox ≥ 115.
+- Firefox ≥ 140.
 - For everything except the built-in dark mode: [lmgw](https://github.com/lmgw-dev/lmgw), reachable
   at `http://127.0.0.1:8787` by default (Options → Gateway base URL). If lmgw has *Require API key*
   on, create a client key under *Usage → Keys* and enter it in the options page.

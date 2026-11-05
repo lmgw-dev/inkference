@@ -352,6 +352,37 @@
       }
     }
 
+    // Inline styles (`<th style="background:#ebebd2">`, Wikipedia's infoboxes) are in no sheet,
+    // so the compiler would turn the text on them light and leave the box light. Each distinct
+    // style attribute becomes a paint rule keyed on its exact text; a user !important beats an
+    // inline declaration, and the same template markup on the site's other pages matches too.
+    // Values a CSS string would need escapes for are skipped rather than escaped: the selector
+    // is page text going into our sheet.
+    const INLINE_CAP = 4000;
+    const inlineSeen = new Set();
+    let inline = 0;
+    for (const el of document.querySelectorAll("[style]")) {
+      if (inline >= INLINE_CAP) break;
+      const attr = el.getAttribute("style") || "";
+      if (!attr || attr.length > 300 || inlineSeen.has(attr) || /["\\\n\r\f<>{}]/.test(attr)) continue;
+      inlineSeen.add(attr);
+      inline++;
+      const d = visit(el.style).filter((x) => !x.p.startsWith("--"));
+      if (d.length) paint.push({ sel: `[style="${attr}"]`, wrap: [], d });
+    }
+    result.counts.inlineStyles = inlineSeen.size;
+    // The same for the presentational attribute (`<table bgcolor="#f6f6ef">`, Hacker News).
+    const bgSeen = new Set();
+    for (const el of document.querySelectorAll("[bgcolor]")) {
+      const attr = el.getAttribute("bgcolor") || "";
+      if (bgSeen.has(attr) || !/^#?[0-9a-z]{3,20}$/i.test(attr)) continue;
+      bgSeen.add(attr);
+      const c = canon(/^[0-9a-f]{3}$|^[0-9a-f]{6}$/i.test(attr) ? "#" + attr : attr);
+      if (!c) continue;
+      tallyColor("bg", c);
+      paint.push({ sel: `[bgcolor="${attr}"]`, wrap: [], d: [{ p: "background-color", v: c }] });
+    }
+
     result.counts.paintRules = paint.length;
     result.counts.tokenDefs = tokenDefs.size;
     result.chains = Object.fromEntries(Array.from(chains, ([k, v]) => [k, Array.from(v)]));

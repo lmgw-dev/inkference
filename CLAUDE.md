@@ -273,6 +273,12 @@ sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → 
      `sectionThemes` says so, and if the model picks it anyway, **verify** catches it: a native theme that
      left more than `STILL_LIGHT_FRACTION` of the viewport light is swapped for a recolour built from the
      same plan, no second model call.
+   - **Inline colours are in no sheet**: each distinct `style` attribute (and `bgcolor`) becomes a paint
+     rule keyed on its exact text (`[style="…"]`, `[bgcolor="…"]`), else the text on Wikipedia's
+     infobox headers went light on a still-light box and Hacker News stayed 49% light. Values that
+     would need CSS-string escapes are skipped (page text goes into our sheet). Known gap: tokens
+     re-pointed inside a section (GitHub's dark header sets `--…-bgColor-rest: var(--…-text-default)`)
+     are mapped from the ROOT value, so its "Sign up" button comes out white on white.
    - **Cross-origin sheets** throw on `.cssRules`; the background fetches them (host permission) and
      re-runs the probe with their text in `globalThis.__rsdDarkExtraSheets` (parsed into constructed
      sheets — content scripts of one extension share a global per frame, so a `code` injection can hand

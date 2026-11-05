@@ -17,6 +17,7 @@
     "lint": "web-ext lint --source-dir=src",
     "build": "web-ext build --source-dir=src --artifacts-dir=dist --overwrite-dest",
     "sign": "web-ext sign --channel=unlisted --source-dir=src --artifacts-dir=dist",
+    "source": "mkdir -p dist && git archive --format=zip --prefix=inkference-source/ -o dist/inkference-source.zip HEAD",
     "ground-check": "node tools/ground-check.mjs",
     "dark-check": "node tools/dark-check.mjs",
     "script-check": "node tools/script-check.mjs",
