@@ -60,53 +60,32 @@ No account, no analytics, no telemetry. Data goes only to the gateway you config
 
 ## Notes to reviewer
 
-Paste into "Notes to Reviewer".
+Paste into "Notes to Reviewer" (AMO caps it at 3000 characters; this is ~2800).
 
 ```
-Inkference connects the browser to a self-hosted LLM gateway (lmgw, MIT, https://github.com/lmgw-dev/lmgw)
-running on the user's own machine, default http://127.0.0.1:8787. There is no server of ours.
-The dark mode works without the gateway, so it can be tested without any setup.
+Inkference connects the browser to a self-hosted LLM gateway (lmgw, MIT, https://github.com/lmgw-dev/lmgw) on the user's own machine, default http://127.0.0.1:8787. There is no server of ours. The dark mode works without the gateway, so it can be tested without any setup.
 
-Testing without lmgw:
-- Open any light site (e.g. en.wikipedia.org), click the toolbar button. The tooltip reports the
-  light fraction before -> after.
+Testing without lmgw: open any light site (e.g. en.wikipedia.org) and click the toolbar button. The tooltip reports the light fraction before -> after. On addons.mozilla.org and other restricted Mozilla hosts the button is greyed out by design.
 
-Testing with a fake gateway: the source archive contains mock/ (npm run mock), a local test site.
-The LLM features need a real OpenAI-compatible endpoint; set its URL in the options page.
+The LLM features need an OpenAI-compatible endpoint; set its URL in the options page. mock/ in the source archive (npm run mock) is a local test site.
 
-Source code / build:
-- All extension code in src/ is hand-written ES modules, not built or minified.
-- src/vendor/readability.js, src/vendor/marked.js and src/vendor/dompurify.js are esbuild bundles of
-  the npm packages @mozilla/readability, marked and dompurify (versions pinned in package-lock.json).
-  Reproduce with Node 22 / npm 10+:
-      npm ci
-      npm run vendor
+Source / build:
+- All code in src/ is hand-written ES modules, not built or minified.
+- src/vendor/{readability,marked,dompurify}.js are esbuild bundles of @mozilla/readability, marked and dompurify (pinned in package-lock.json). Reproduce with Node 22 / npm 10+:
+    npm ci
+    npm run vendor
   The output is byte-identical to the shipped files.
 
 Permissions:
-- <all_urls>: the dark mode applies a per-site stylesheet (tabs.insertCSS) and probes the page's CSS
-  on any site the user clicks it on; the sidebar agent reads and operates the tab the user asks it
-  to; cross-origin stylesheets are fetched by the background because .cssRules throws on them.
+- <all_urls>: the dark mode probes the page's CSS and applies a per-site stylesheet (tabs.insertCSS) on sites the user clicks it on; the sidebar agent reads and operates the tab the user asks it to; cross-origin stylesheets are fetched by the background because .cssRules throws on them.
 - http://127.0.0.1:8787/*: the default gateway address.
-- webRequest + webRequestBlocking: an approval gate. When the user lets the agent change a setting
-  in a page form (e.g. their router's admin page), every write request (POST/PUT/PATCH/DELETE) from
-  that tab is held until the user approves it in the sidebar, showing method, URL and body. It is
-  only armed during such a task and removed when the task ends.
-- webNavigation: enumerates frames so the agent and per-site scripts reach iframes; re-applies
-  per-site stylesheets on navigation.
-- tabs, activeTab, menus, notifications, storage: tab access, the right-click actions, read-aloud
-  errors when no sidebar is open, settings.
+- webRequest + webRequestBlocking: an approval gate. When the user lets the agent change a setting in a page form (e.g. their router's admin page), every write request (POST/PUT/PATCH/DELETE) from that tab is held until the user approves it in the sidebar, showing method, URL and body. Armed only during such a task, removed when it ends.
+- webNavigation: enumerates frames so the agent and per-site scripts reach iframes; re-applies per-site stylesheets on navigation.
+- tabs, activeTab, menus, notifications, storage: tab access, right-click actions, read-aloud errors when no sidebar is open, settings.
 
-innerHTML (linter warnings):
-- sidebar/chat.js renders model replies as markdown via marked and then DOMPurify (media, forms,
-  <style> and all URL-bearing attributes forbidden) before assigning innerHTML.
-- vendor/*: inside Readability and DOMPurify themselves.
+innerHTML warnings: sidebar/chat.js renders model replies via marked, then DOMPurify (media, forms, <style> and URL-bearing attributes forbidden), before assigning innerHTML. The rest are inside Readability and DOMPurify.
 
-Data collection: websiteContent and browsingActivity are declared because page text, URLs and
-titles are sent to the user-configured gateway when the user runs a sidebar/agent task. Nothing is
-sent anywhere else, and nothing is sent until the user configures a gateway and uses such a feature.
+Data collection: websiteContent and browsingActivity are declared because page text, URLs and titles go to the user-configured gateway when the user runs a sidebar/agent task. Nothing goes anywhere else, and nothing is sent before the user configures a gateway and uses such a feature.
 
-Page-world scripts: content/net-hook.js injects a small fetch/XHR wrapper into the page only when the
-user approves rewriting an outgoing form value during an agent task; content/cheat-hud.js (Ctrl+Shift+G)
-is a developer console for reading/writing a single-player browser game's JS state via wrappedJSObject.
+Page-world scripts: content/net-hook.js injects a small fetch/XHR wrapper only when the user approves rewriting an outgoing form value during an agent task; content/cheat-hud.js (Ctrl+Shift+G) is a developer console for reading/writing a single-player browser game's JS state via wrappedJSObject.
 ```
