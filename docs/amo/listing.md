@@ -45,6 +45,7 @@ With a local model connected via lmgw, the model designs the plan for each site;
 writes the CSS.
 
 **With lmgw (free, self-hosted: https://github.com/lmgw-dev/lmgw)**
+
 - Sidebar chat (Ctrl+Shift+L) with a "Use page" mode: the agent reads the page and can click, type
   and scroll for you. Purchases and other irreversible clicks wait for your approval; opening a new
   site asks first.
