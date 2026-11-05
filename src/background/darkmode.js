@@ -36,12 +36,66 @@ const BADGE = {
   busy: { text: "…", color: "#b58900" },
   on: { text: "on", color: "#268bd2" },
   err: { text: "!", color: "#dc322f" },
-  na: { text: "—", color: "#586e75" },
   off: { text: "", color: "#000000" },
 };
 
 function isStylable(url) {
   return /^https?:/.test(url || "");
+}
+
+// Firefox keeps every extension off these hosts (extensions.webextensions.restrictedDomains), so
+// an injection there fails by design. Shown as "not available here", not as an error: the first
+// place a store reviewer clicks the button may well be addons.mozilla.org.
+const RESTRICTED_HOSTS = new Set([
+  "accounts-static.cdn.mozilla.net", "accounts.firefox.com", "addons.cdn.mozilla.net", "addons.mozilla.org",
+  "api.accounts.firefox.com", "content.cdn.mozilla.net", "discovery.addons.mozilla.org", "install.mozilla.org",
+  "oauth.accounts.firefox.com", "profile.accounts.firefox.com", "support.mozilla.org", "sync.services.mozilla.com",
+]);
+const NA_RESTRICTED = "AI dark mode: Firefox doesn't let extensions change this site";
+const NA_PAGE = "AI dark mode: not available on this kind of page";
+function isRestricted(url) {
+  try {
+    return RESTRICTED_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+// Where it can't run, the whole button greys out (disabled for that tab; the tooltip still says
+// why) instead of carrying a badge. Set on every navigation, so it is grey before anyone clicks.
+const greyed = new Set(); // tab ids whose button is disabled
+function markUnavailable(tabId, title) {
+  greyed.add(tabId);
+  try {
+    browser.browserAction.setBadgeText({ tabId, text: "" });
+    browser.browserAction.setTitle({ tabId, title });
+    browser.browserAction.disable(tabId);
+  } catch {
+    /* tab gone */
+  }
+}
+function updateAvailability(tabId, url) {
+  if (!isStylable(url)) markUnavailable(tabId, NA_PAGE);
+  else if (isRestricted(url)) markUnavailable(tabId, NA_RESTRICTED);
+  else if (greyed.delete(tabId)) {
+    try {
+      browser.browserAction.enable(tabId);
+      browser.browserAction.setTitle({ tabId, title: null }); // back to the manifest default
+    } catch {
+      /* tab gone */
+    }
+  }
+}
+
+// The badge for a failed compile/apply: a refused injection (a restricted host this list doesn't
+// know, a privileged page) is "not available"; anything else is a real error, named in the tooltip.
+function failBadge(tabId, what, e) {
+  const msg = (e && e.message) || "unknown error";
+  if (/missing host permission|cannot access|non-structured-clonable|can't access/i.test(msg)) {
+    markUnavailable(tabId, NA_PAGE);
+    return false;
+  }
+  setBadge(tabId, "err", `${what}: ${msg}\nRight-click: recompile / forget`);
+  return true;
 }
 function originOf(url) {
   try {
@@ -331,9 +385,9 @@ async function persistEnabled() {
 // ---- public: toggle / regenerate / re-apply --------------------------------
 
 export async function toggleDark(tab) {
-  if (!tab || !isStylable(tab.url)) {
-    if (tab) setBadge(tab.id, "na");
-    notifyError("AI dark mode can't run on this page type.", tab ? tab.url : "");
+  if (!tab) return;
+  if (!isStylable(tab.url) || isRestricted(tab.url)) {
+    updateAvailability(tab.id, tab.url);
     return;
   }
   const tabId = tab.id;
@@ -359,8 +413,7 @@ export async function toggleDark(tab) {
       await applyEntry(tabId, origin, hit);
       setBadge(tabId, "on", describe(hit));
     } catch (e) {
-      setBadge(tabId, "err");
-      notifyError("Couldn't apply the cached dark theme.", (e && e.message) || "");
+      if (failBadge(tabId, "Couldn't apply the cached dark theme", e)) notifyError("Couldn't apply the cached dark theme.", (e && e.message) || "");
       return;
     }
     // The generic sheet stays on instantly; a model connected since then designs the real one.
@@ -384,8 +437,7 @@ export async function toggleDark(tab) {
     setBadge(tabId, "on", describe(entry));
   } catch (e) {
     if (genToken.get(tabId) === token) {
-      setBadge(tabId, "err");
-      notifyError("AI dark mode failed: " + ((e && e.message) || "unknown error"), (e && e.detail) || "");
+      if (failBadge(tabId, "AI dark mode failed", e)) notifyError("AI dark mode failed: " + ((e && e.message) || "unknown error"), (e && e.detail) || "");
     }
   } finally {
     if (genToken.get(tabId) === token) genToken.delete(tabId);
@@ -414,7 +466,11 @@ export async function forget(tab) {
 // Force a fresh probe + compile for the active tab's origin, ignoring the cache. Useful
 // after a site redesign or to iterate on the generator. Applies the result if toggled on.
 export async function regenerate(tab) {
-  if (!tab || !isStylable(tab.url)) return;
+  if (!tab) return;
+  if (!isStylable(tab.url) || isRestricted(tab.url)) {
+    updateAvailability(tab.id, tab.url);
+    return;
+  }
   const tabId = tab.id;
   const origin = originOf(tab.url);
   const token = {};
@@ -430,8 +486,7 @@ export async function regenerate(tab) {
     setBadge(tabId, "on", describe(entry));
   } catch (e) {
     if (genToken.get(tabId) === token) {
-      setBadge(tabId, "err");
-      notifyError("Recompile failed: " + ((e && e.message) || "unknown error"), (e && e.detail) || "");
+      if (failBadge(tabId, "Recompile failed", e)) notifyError("Recompile failed: " + ((e && e.message) || "unknown error"), (e && e.detail) || "");
       // compileFor took the old sheet off before measuring; put the cached one back.
       const prev = cache.get(origin);
       if (prev && enabled.has(origin)) await applyEntry(tabId, origin, prev).catch(() => {});
@@ -461,6 +516,7 @@ export async function initDarkmode({ getConfig, onError }) {
   }
 
   browser.browserAction.onClicked.addListener((tab) => toggleDark(tab));
+  for (const t of await browser.tabs.query({}).catch(() => [])) updateAvailability(t.id, t.url);
 
   // Right-click the toolbar button → recompile (try a new theme) or forget (delete the bad
   // one). (browser_action context menus live on the button itself.)
@@ -482,6 +538,7 @@ export async function initDarkmode({ getConfig, onError }) {
 
   // Re-apply on navigation so an enabled origin stays dark across loads and new tabs.
   browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (changeInfo.url) updateAvailability(tabId, changeInfo.url);
     if (changeInfo.status === "loading") {
       // New document is replacing the old one; its injected CSS/attrs are gone with it.
       applied.delete(tabId);
@@ -489,7 +546,7 @@ export async function initDarkmode({ getConfig, onError }) {
     }
     if (changeInfo.status !== "complete") return;
     const origin = originOf(tab.url);
-    if (!origin || !isStylable(tab.url)) return;
+    if (!origin || !isStylable(tab.url) || isRestricted(tab.url)) return;
     if (!enabled.has(origin) || !cache.has(origin)) return;
     const rec = applied.get(tabId);
     if (rec && rec.done && rec.origin === origin) return; // already applied to this document
@@ -504,6 +561,7 @@ export async function initDarkmode({ getConfig, onError }) {
 
   browser.tabs.onRemoved.addListener((tabId) => {
     applied.delete(tabId);
+    greyed.delete(tabId);
     genToken.delete(tabId);
   });
 }

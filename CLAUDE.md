@@ -228,7 +228,10 @@ sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → 
    per origin: probe the page, census what it paints, ask the LLM **once** for a PLAN, compile the sheet
    from the plan, apply, **verify** by censusing again, cache keyed by origin, re-apply instantly on every
    later visit. CSS is injected `cssOrigin:"user"` so its `!important` beats the site's author rules.
-   Right-click the toolbar button → recompile / forget. **No model needed:** with no chat model
+   Right-click the toolbar button → recompile / forget. The badge: `on`, `…` compiling, the whole button GREYED (disabled per tab, set on every
+   navigation) where it can't run: non-http pages and hosts Firefox keeps extensions off (`RESTRICTED_HOSTS`,
+   addons.mozilla.org among them; an injection refusal elsewhere greys it too),
+   `!` a real failure, with its message in the tooltip. **No model needed:** with no chat model
    picked, `plan()` returns the default plan (built-in theme, no error) and the entry is marked `generic`;
    the tooltip says so, and the next toggle with a model available upgrades it once per origin per session.
    A (re)compile takes our own sheet off BEFORE probe/census — they read computed colours. The button tooltip carries the verdict
