@@ -123,12 +123,17 @@ const UPGRADE_HINT = "Connect an lmgw gateway with a local model (Inkference opt
 const upgradeTried = new Set(); // origins whose generic sheet was already retried this session
 
 const pct = (f) => (f == null ? "?" : Math.round(f * 100) + "%");
-// The tooltip on the toolbar button is where the compile explains itself: strategy, how much
-// of the viewport was light before and after, and whether it had to fall back.
+// The tooltip on the toolbar button is where the compile explains itself: strategy, how much was
+// light before and after, and whether it had to fall back. BOTH readings are named, because the
+// one page shape where the viewport number is meaningless — a tall dark hero over a light body —
+// is exactly the shape whose tooltip someone reads when asking why nothing happened.
 function describe(entry) {
   const v = entry.verify;
   let s = "AI dark mode: on — " + entry.strategy;
-  if (v) s += ` (${pct(v.before)} → ${pct(v.after)} of the viewport light${v.fellBack ? `; native theme left ${pct(v.nativeLeft)}, recoloured instead` : ""})`;
+  if (v)
+    s +=
+      ` (viewport ${pct(v.before)} → ${pct(v.after)} light, page ${pct(v.beforeDoc)} → ${pct(v.afterDoc)}` +
+      `${v.fellBack ? `; native theme left ${pct(v.nativeLeft)}, recoloured instead` : ""})`;
   if (entry.rationale) s += "\n" + entry.rationale;
   if (entry.generic) s += "\n" + UPGRADE_HINT;
   return s;
@@ -219,6 +224,37 @@ async function removeFromTab(tabId) {
 async function execFile(tabId, file) {
   const r = await browser.tabs.executeScript(tabId, { file });
   return r && r[0];
+}
+
+// Amazon-class pages inject their widget stylesheets AND their DOM late — after the document
+// is `complete` — so a probe fired the instant the button is clicked sees only a fraction of
+// the page's CSS (measured on amazon.de: 14 of the 30 stylesheets it finally settles to) and
+// the compiler darkens only that fraction, leaving whole widgets (grey card frames, white
+// product tiles, carousel arrows) light. So before the FIRST compile we wait for the document
+// to go QUIET: no new stylesheet and no structural DOM change (childList/attributes — pure
+// text ticks like a countdown are ignored, or a live clock would never settle) for
+// SETTLE_QUIET ms, capped at SETTLE_MAX. Cheap (one short-lived observer + a poll), and it
+// runs once per origin — the cached sheet re-applies instantly on every later visit, so steady
+// state is untouched. A recompile on an already-settled page returns almost immediately.
+const SETTLE_QUIET = 600;
+const SETTLE_MAX = 8000;
+async function settle(tabId) {
+  const code =
+    "new Promise(function(resolve){" +
+    "var QUIET=" + SETTLE_QUIET + ",MAX=" + SETTLE_MAX + ",t0=Date.now(),last=Date.now(),sheets=document.styleSheets.length;" +
+    "var mo=new MutationObserver(function(){last=Date.now();});" +
+    "try{mo.observe(document.documentElement,{childList:true,subtree:true,attributes:true});}catch(e){}" +
+    "var iv=setInterval(function(){var now=Date.now(),s=document.styleSheets.length;" +
+    "if(s!==sheets){sheets=s;last=now;}" +
+    "var quiet=now-last,ready=document.readyState==='complete';" +
+    "if((ready&&quiet>=QUIET)||now-t0>=MAX){clearInterval(iv);mo.disconnect();resolve({waited:now-t0,sheets:s});}" +
+    "},150);});";
+  try {
+    const r = await browser.tabs.executeScript(tabId, { code });
+    return (r && r[0]) || null;
+  } catch {
+    return null; // not injectable / page raced us — compile with whatever the probe sees
+  }
 }
 
 // Cross-origin sheets are unreadable from the page (SecurityError on .cssRules) but the
@@ -341,38 +377,191 @@ function build(seam, painted, p) {
   };
 }
 
+// A conspicuous light surface, in CSS px² — about 200×200. The point of an AREA and not another
+// fraction is that a fraction asks the wrong question: the same infobox is 5.7% of a 2000px-wide
+// window and 11% of a 1000px one, so a share-based gate decides on window size rather than on
+// what the reader is looking at. Measured on de.wikipedia.org: with the sheet compiled on the
+// main page, an article's taxobox is a 335×920 white box — 308,000 px², unmistakable — and it
+// came to 5.7% of the viewport against the 6% gate, so `topUp` returned at its first test and
+// the box stayed light for good. It only cleared 6% in my own measurements because the white
+// fundraising banner happened to be on screen and carried 152 of the 182 light samples.
+const LIGHT_SURFACE_PX = 40000;
+// Unreadable text is a STRICTLY worse failure than a light surface and is measured anyway, so it
+// triggers a top-up too — but not on a single stray run, because a site ships low-contrast text
+// of its own and re-probing every load for someone else's grey-on-grey is not worth it.
+const TOPUP_UNREADABLE = 5;
+export function needsTopUp(c) {
+  if (!c) return false;
+  if (Math.max(c.lightFraction || 0, c.docLightFraction || 0) > RELIGHT_FRACTION) return true;
+  if (c.lightSurface && c.lightSurface.area > LIGHT_SURFACE_PX) return true;
+  return (c.unreadable || 0) >= TOPUP_UNREADABLE;
+}
+
+// A sheet is compiled once per ORIGIN, but it is a list of the SELECTORS that existed on the
+// page it was compiled from. Another page of the same origin brings widgets that sheet never
+// heard of, while its generic text rules still fire — so the text goes light and the surface
+// under it stays white. Measured on amazon.de: the sheet compiled on the home page, applied to
+// a category page, left 459 pieces of light text on a light surface (the category cards, the
+// "Empfehlungen" band, 418 prices); the same page compiled for itself left 0.
+//
+// So the cached sheet is applied first, exactly as before — it is instant and it is right for
+// everything the two pages share — and then this tops it up: re-probe THIS document and
+// rebuild from the plan already cached for the origin. No model call, no new plan; the theme,
+// palette and strategy are the origin's and do not change. The cache keeps the origin's own
+// sheet, because a per-page sheet must not become what the next page inherits.
+async function topUp(tabId, origin, entry) {
+  if (!entry || !entry.plan) return;
+  // MEASURE FIRST. Two reasons. It is cheaper: a page the origin's sheet already covers needs no
+  // work at all, and a census is far less than a probe on a heavy document, so the common case
+  // now costs less than it did when this always re-probed. And it is the only way to catch a
+  // NATIVE THEME that does not reach this page: the hook was verified once, on the page it was
+  // compiled from, and `verify` never runs again — so an origin whose home page the hook covers
+  // and whose article pages it does not stayed half light for good, with nothing in the pipeline
+  // able to notice. Both census readings count, as everywhere else.
+  const c = await census(tabId);
+  if (!c) return;
+  if (!needsTopUp(c)) return;
+  const rec = applied.get(tabId);
+  if (!rec || rec.origin !== origin) return;
+
+  // OUR SHEET COMES OFF BEFORE WE PROBE. `compileFor` and the relight loop both do this and say
+  // why — probe and census read COMPUTED colours — and this was the one call site that did not.
+  // The cost is not cosmetic: the probe reads each token's value in force at the root, so with
+  // our sheet applied every token reads back as the dark colour WE put there, `mapByRole` finds
+  // nothing to darken, and the root-token pass emits nothing at all. Measured on an IMDb title
+  // page: the origin's sheet carried 35 root pins and held the page at 0% light; a top-up
+  // probing through it produced 0 pins, and swapping that sheet in put the page back to 93%
+  // document-light with 10 unreadable runs. The top-up undid the only thing darkening the page.
+  // Wikipedia hid this, because its light surfaces are literal declarations rather than tokens —
+  // there the dirty probe lost 123 of 129 pins and still looked identical.
+  //
+  // The page is light for as long as the probe takes, which is why the sheet is pulled only
+  // AFTER the census above has decided there is work to do: on a page the origin's sheet already
+  // covers nothing is removed and nothing flickers. `settle` is not repeated — the caller
+  // already waited for it.
+  await removeCss(tabId, rec.css).catch(() => {});
+  let seam = null;
+  let painted = null;
+  try {
+    seam = await probe(tabId);
+    painted = await census(tabId);
+  } catch (e) {
+    seam = null;
+  }
+  // Any failure from here on must put the origin's sheet back, or the page is left bare — a far
+  // worse outcome than the half-covered page we were trying to improve.
+  const restore = async (why) => {
+    await applyCss(tabId, rec.css).catch(() => {});
+    if (why) noteTopUp(tabId, entry, why);
+  };
+  if (!seam || !painted) return restore("could not re-read this page");
+
+  // The theme is still right for the pages the hook covers, so the ORIGIN keeps it and the hook
+  // stays on; this page alone also gets a recolour built from the same plan, over the top.
+  const planHere = entry.strategy === "native-theme" ? { ...entry.plan, strategy: "recolor" } : entry.plan;
+  let fresh = null;
+  try {
+    fresh = build(seam, painted, planHere);
+  } catch (e) {
+    return restore("could not compile rules for this page");
+  }
+  if (!fresh.css || fresh.css === rec.css) return restore(null); // nothing to add; back as it was
+  const still = applied.get(tabId);
+  if (!still || still.origin !== origin) return; // navigated away; that document is gone anyway
+  await applyCss(tabId, fresh.css);
+  applied.set(tabId, { ...still, css: fresh.css, toppedUp: true });
+}
+
+// A top-up that fails is invisible: it runs detached from the toggle, so a thrown probe left the
+// origin's half-covered sheet on the page with nothing anywhere saying why. The tooltip is where
+// this pipeline explains itself, so it says so there too.
+function noteTopUp(tabId, entry, why) {
+  const rec = applied.get(tabId);
+  if (rec) applied.set(tabId, { ...rec, topUpFailed: why });
+  setBadge(tabId, "on", describe(entry) + "\nThis page: " + why + " — showing the rules compiled for the site's other pages.");
+}
+
 // Measure, don't assume: census the page with the sheet applied. A native theme that left
-// most of the viewport light (a section palette the root attribute could not reach) is
-// swapped for a recolour built from the same plan.
+// most of the page light (a section palette the root attribute could not reach) is swapped
+// for a recolour built from the same plan.
+//
+// BOTH readings count, because the hit-tested one only sees the current screenful. A page
+// whose hero is taller than the window and natively dark, with its real content white below
+// it, measures 0% light at the top however little the theme achieved — so the viewport alone
+// would certify a theme that never reached the body. docLightFraction walks the document's
+// own surfaces and answers the other half of the question: is there a lot of light further
+// down? Either one over the threshold sends us to a recolour, which rewrites declarations and
+// so does not care what is currently on screen.
 async function verify(tabId, origin, entry, seam, painted) {
   const before = painted ? painted.lightFraction : null;
+  const beforeDoc = painted ? painted.docLightFraction : null;
   const after = await census(tabId);
-  entry.verify = { before, after: after ? after.lightFraction : null, fellBack: false };
-  if (after && entry.strategy === "native-theme" && after.lightFraction > STILL_LIGHT_FRACTION) {
+  const stillLight = (c) => !!c && Math.max(c.lightFraction || 0, c.docLightFraction || 0);
+  entry.verify = { before, beforeDoc, after: after ? after.lightFraction : null, afterDoc: after ? after.docLightFraction : null, fellBack: false };
+  if (after && entry.strategy === "native-theme" && stillLight(after) > STILL_LIGHT_FRACTION) {
+    const left = stillLight(after);
+    const where = (after.docLightFraction || 0) > (after.lightFraction || 0) ? "the page" : "the viewport";
     const e2 = build(seam, painted, { ...entry.plan, strategy: "recolor" });
-    e2.rationale = (entry.rationale ? entry.rationale + " " : "") + `Native theme left ${pct(after.lightFraction)} of the viewport light; recoloured instead.`;
+    e2.rationale = (entry.rationale ? entry.rationale + " " : "") + `Native theme left ${pct(left)} of ${where} light; recoloured instead.`;
     await removeFromTab(tabId);
     await applyEntry(tabId, origin, e2);
     const again = await census(tabId);
-    e2.verify = { before, after: again ? again.lightFraction : null, fellBack: true, nativeLeft: after.lightFraction };
+    e2.verify = { before, beforeDoc, after: again ? again.lightFraction : null, afterDoc: again ? again.docLightFraction : null, fellBack: true, nativeLeft: left };
     return e2;
   }
   return entry;
 }
 
-// The whole first-visit pipeline for one tab: probe → census → plan → compile → apply → verify.
+// A page that keeps injecting widget CSS after it first goes quiet (amazon.de loads its "SFS"
+// design tokens and card stylesheets seconds after `complete`) can pass settle and still have
+// whole tiles paint light, because the token definitions the compiler needed weren't in the DOM
+// yet. So when the verify census still finds more than RELIGHT_FRACTION of the viewport light,
+// re-probe (more sheets have landed) and recompile with the SAME plan — no extra model call —
+// up to RELIGHT_ROUNDS times, keeping the darkest result. This is measure-don't-assume: the
+// actual paint measurement, not a guessed wait, decides whether another pass is worth it.
+const RELIGHT_FRACTION = 0.06;
+const RELIGHT_ROUNDS = 2;
+
+// The whole first-visit pipeline for one tab: probe → census → plan → compile → apply → verify,
+// then re-probe/recompile while the page still paints light (late-loading CSS).
 async function compileFor(tabId, origin, isCurrent) {
   // Drop a previous sheet FIRST: probe and census read computed colours, so measuring with our
   // own dark sheet still applied would describe (and verify against) an already-dark page.
   await removeFromTab(tabId);
+  // Then let late-loading stylesheets/widgets land, or the probe sees half the page (see settle).
+  await settle(tabId);
+  if (!isCurrent()) return null; // toggled off during the wait
   const seam = await probe(tabId);
   const painted = await census(tabId);
   const p = await plan(seam, painted);
   if (!isCurrent()) return null;
-  let entry = build(seam, painted, p);
-  await applyEntry(tabId, origin, entry);
-  entry = await verify(tabId, origin, entry, seam, painted);
-  return entry;
+  let best = build(seam, painted, p);
+  await applyEntry(tabId, origin, best);
+  best = await verify(tabId, origin, best, seam, painted);
+
+  // Both readings again: on a page whose first screenful is natively dark the viewport says 0%
+  // however much white is below it, so a viewport-only test never asks for another round on the
+  // one page shape that needs it most. Measured after the sheet on the reference pages, the
+  // document reading is 0–2%, well under RELIGHT_FRACTION, so this asks for no extra round there.
+  const lightLeft = (e) => (e.verify ? Math.max(e.verify.after || 0, e.verify.afterDoc || 0) : 0);
+  for (let round = 0; round < RELIGHT_ROUNDS && lightLeft(best) > RELIGHT_FRACTION; round++) {
+    await removeFromTab(tabId); // off before re-probing: probe/census read computed colours
+    await settle(tabId);
+    if (!isCurrent()) break;
+    const seam2 = await probe(tabId);
+    const painted2 = await census(tabId);
+    let e2 = build(seam2, painted2, p); // reuse the plan — only coverage changed, not the design
+    await applyEntry(tabId, origin, e2);
+    e2 = await verify(tabId, origin, e2, seam2, painted2);
+    if (lightLeft(e2) <= lightLeft(best)) {
+      best = e2; // improved (or tied) — it's the one now applied
+    } else {
+      await removeFromTab(tabId); // a rare worse pass: put the darker sheet back
+      await applyEntry(tabId, origin, best);
+      break;
+    }
+  }
+  return best;
 }
 
 async function persistCache() {
@@ -554,6 +743,18 @@ export async function initDarkmode({ getConfig, onError }) {
       const entry = cache.get(origin);
       await applyEntry(tabId, origin, entry);
       setBadge(tabId, "on", describe(entry));
+      // The origin's sheet is on; now give THIS page the rules it needs. Deliberately after
+      // the badge and never awaited by the caller: the page is already dark, and a slow probe
+      // on a heavy document must not hold up the apply. It waits for the page to stop
+      // injecting widget CSS first, for the same reason a compile does.
+      settle(tabId)
+        .catch(() => {})
+        .then(() => topUp(tabId, origin, entry))
+        .catch((e) => {
+          // The origin's sheet is still applied, but say so rather than swallowing it: a silent
+          // catch here is why a page that topped up badly looked like a compiler bug.
+          noteTopUp(tabId, entry, (e && e.message) || "top-up failed");
+        });
     } catch {
       /* page raced us / not injectable */
     }

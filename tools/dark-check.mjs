@@ -34,6 +34,7 @@ import { STILL_LIGHT_FRACTION, compileSheet, defaultPlan, parsePlan, summarize }
 import { chatOnce } from "../src/background/gateway.js";
 import { DARK_MODE_SYSTEM_PROMPT, buildDarkUserMessage } from "../src/common/prompts.js";
 import { launchFirefox } from "./lib/firefox-bidi.mjs";
+import { decodePng, lightFractionOf } from "./lib/png.mjs";
 
 const ROOT = join(fileURLToPath(import.meta.url), "..", "..");
 
@@ -45,7 +46,7 @@ let gatewayUrl = "http://127.0.0.1:8787";
 const gatewayKey = (process.env.LMGW_API_KEY || "").trim(); // env only: never an argv flag (shell history, ps)
 let out = "/tmp/rsd-dark-check";
 let maxLight = 0.25; // a page still lighter than this after the theme is a failure
-let settle = 1500; // ms to let late-loading styles land before probing
+let settle = 8000; // MAX ms to wait for late-loading styles to land before probing (adaptive — see settlePage)
 let width = 1280;
 let height = 900;
 for (let i = 0; i < args.length; i++) {
@@ -66,7 +67,7 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 if (!urls.length) {
-  console.error("usage: npm run dark-check -- [--model <id>] [--out DIR] [--max-light 0.25] [--settle MS] [--size WxH] <url> [url…]");
+  console.error("usage: npm run dark-check -- [--model <id>] [--out DIR] [--max-light 0.25] [--settle MAX_MS] [--size WxH] <url> [url…]");
   process.exit(2);
 }
 
@@ -74,7 +75,47 @@ const iife = (src) => src.trim().replace(/;\s*$/, ""); // the content scripts ar
 const probeSrc = iife(await readFile(join(ROOT, "src/content/restyle-probe.js"), "utf8"));
 const censusSrc = iife(await readFile(join(ROOT, "src/content/paint-census.js"), "utf8"));
 const pct = (f) => (f == null ? "  ?" : String(Math.round(f * 100)).padStart(3) + "%");
+
+// What the screenshot ACTUALLY shows, as a second opinion on the census. The census hit-tests
+// elements, so a painter that is no element's own background is invisible to it — amazon.de
+// draws its gutters with a 2000px-spread box-shadow and scored 0% light while a fifth of the
+// screen was grey. Pixels include photos and product art, so this never reaches 0 on a real
+// page and is reported, not gated: a BIG gap between the two numbers is the signal.
+async function pixelLight(path) {
+  try {
+    return lightFractionOf(decodePng(await readFile(path)));
+  } catch {
+    return null; // an unreadable screenshot must not fail the run
+  }
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Mirror the extension's settle (background/darkmode.js): Amazon-class pages inject widget
+// stylesheets and DOM after `complete`, so probing the instant the page loads sees a fraction
+// of its CSS. Wait until the document is QUIET — stylesheet count and DOM size unchanged for
+// `quiet` ms — capped at `maxMs`. Polled from Node because evaluate() wraps the expression in
+// JSON.stringify(), which resolves a Promise synchronously (a page-side await would not work).
+async function settlePage(ff, maxMs, quiet = 600) {
+  const t0 = Date.now();
+  let last = Date.now();
+  let sig = "";
+  while (Date.now() - t0 < maxMs) {
+    let s;
+    try {
+      s = await ff.evaluate("({n:document.styleSheets.length,ready:document.readyState==='complete',h:(document.documentElement.innerHTML||'').length})");
+    } catch {
+      break;
+    }
+    const now = Date.now();
+    const next = s.n + ":" + s.h;
+    if (next !== sig) {
+      sig = next;
+      last = now;
+    }
+    if (s.ready && now - last >= quiet) break;
+    await sleep(150);
+  }
+}
 
 async function fetchSheets(hrefs) {
   const got = [];
@@ -118,12 +159,8 @@ const injectCode = (css, entry) =>
 const removeCode = (entry) =>
   `(function(){var s=document.getElementById("rsd-dark-check");if(s)s.remove();var a=${JSON.stringify(entry.rootAttributes || {})},c=${JSON.stringify(entry.rootClasses || [])};[document.documentElement,document.body].forEach(function(el){for(var k in a)el.removeAttribute(k);for(var i=0;i<c.length;i++)el.classList.remove(c[i]);});return true;})()`;
 
-async function checkUrl(ff, url) {
-  const host = new URL(url).hostname;
-  const t0 = Date.now();
-  await ff.navigate(url);
-  await sleep(settle);
-  const before = await ff.evaluate(censusSrc);
+// Probe the page, and fetch+reparse the cross-origin sheets it couldn't read (as the extension does).
+async function probeAndFetch(ff) {
   let seam = await ff.evaluate(probeSrc);
   if (!seam || !seam.ok) throw new Error((seam && seam.reason) || "probe failed");
   if (seam.blockedHrefs && seam.blockedHrefs.length) {
@@ -134,30 +171,76 @@ async function checkUrl(ff, url) {
       if (again && again.ok) seam = again;
     }
   }
+  return seam;
+}
+
+// Mirror the extension's re-probe loop (background/darkmode.js): while the viewport still paints
+// light after the theme, probe again (lazy pages keep injecting CSS) and recompile with the SAME
+// plan, keeping the darkest result.
+const RELIGHT_FRACTION = 0.06;
+// The census grades one screenful; docLightFraction grades the whole document. Either one over
+// the threshold means the page is still light — see CLAUDE.md, the IMDb title-page shape.
+const stillLightOf = (c) => (c ? Math.max(c.lightFraction || 0, c.docLightFraction || 0) : 0);
+const RELIGHT_ROUNDS = 2;
+
+async function checkUrl(ff, url) {
+  const host = new URL(url).hostname;
+  const t0 = Date.now();
+  await ff.navigate(url);
+  await settlePage(ff, settle);
+  const before = await ff.evaluate(censusSrc);
+  let seam = await probeAndFetch(ff);
   await ff.screenshot(join(out, host + ".before.png"));
+  const pxBefore = await pixelLight(join(out, host + ".before.png"));
   const summary = summarize(seam, before);
   const { plan, ms, raw } = await planFor(summary);
   await writeFile(join(out, host + ".summary.json"), JSON.stringify(summary, null, 1));
   await writeFile(join(out, host + ".plan.json"), JSON.stringify({ plan, raw }, null, 1));
 
-  const apply = async (p) => {
-    const { css, stats } = compileSheet(seam, before, p);
+  // Compile+inject+census one plan against a given probe/census, with the native→recolor fallback.
+  const apply = async (seamX, censusX, p) => {
+    const { css, stats } = compileSheet(seamX, censusX, p);
     const entry = { css, stats, rootAttributes: p.strategy === "native-theme" ? p.rootAttributes : {}, rootClasses: p.strategy === "native-theme" ? p.rootClasses : [] };
     await ff.evaluate(injectCode(css, entry));
     await sleep(200);
     entry.after = await ff.evaluate(censusSrc);
     return entry;
   };
-  let entry = await apply(plan);
-  let note = plan.rationale || "";
-  if (plan.strategy === "native-theme" && entry.after && entry.after.lightFraction > STILL_LIGHT_FRACTION) {
-    // Same rule as the extension's verify(): the native theme did not reach the page.
-    const nativeLeft = entry.after.lightFraction;
+  const applyWithFallback = async (seamX, censusX) => {
+    let entry = await apply(seamX, censusX, plan);
+    entry.note = plan.rationale || "";
+    // Same rule as the extension's verify(), INCLUDING the document reading: a viewport-only
+    // test cannot see a native theme that never reached the body of a page whose first screenful
+    // is dark anyway, which is the one shape where a native theme most often fails.
+    if (plan.strategy === "native-theme" && entry.after && stillLightOf(entry.after) > STILL_LIGHT_FRACTION) {
+      const nativeLeft = stillLightOf(entry.after);
+      await ff.evaluate(removeCode(entry));
+      entry = await apply(seamX, censusX, { ...plan, strategy: "recolor" });
+      entry.note = `native theme left ${pct(nativeLeft).trim()} light → recoloured. ` + (plan.rationale || "");
+    }
+    return entry;
+  };
+
+  let entry = await applyWithFallback(seam, before);
+  const lightOf = (e) => (e.after ? stillLightOf(e.after) : 0);
+  for (let round = 0; round < RELIGHT_ROUNDS && lightOf(entry) > RELIGHT_FRACTION; round++) {
     await ff.evaluate(removeCode(entry));
-    entry = await apply({ ...plan, strategy: "recolor" });
-    note = `native theme left ${pct(nativeLeft).trim()} light → recoloured. ` + note;
+    await settlePage(ff, settle);
+    const seam2 = await probeAndFetch(ff);
+    const before2 = await ff.evaluate(censusSrc);
+    const e2 = await applyWithFallback(seam2, before2);
+    if (lightOf(e2) <= lightOf(entry)) {
+      entry = e2;
+      seam = seam2;
+    } else {
+      await ff.evaluate(removeCode(e2));
+      entry = await applyWithFallback(seam, before);
+      break;
+    }
   }
+  const note = entry.note || "";
   await ff.screenshot(join(out, host + ".after.png"));
+  const pxAfter = await pixelLight(join(out, host + ".after.png"));
   await writeFile(join(out, host + ".css"), entry.css);
   await writeFile(join(out, host + ".after.json"), JSON.stringify(entry.after, null, 1));
   await ff.evaluate(removeCode(entry));
@@ -169,6 +252,15 @@ async function checkUrl(ff, url) {
     strategy: entry.stats.strategy,
     before: before ? before.lightFraction : null,
     after: entry.after ? entry.after.lightFraction : null,
+    beforeDoc: before ? before.docLightFraction : null,
+    afterDoc: entry.after ? entry.after.docLightFraction : null,
+    lightSurface: entry.after ? entry.after.lightSurface : null,
+    unreadBefore: before ? before.unreadable : null,
+    unreadAfter: entry.after ? entry.after.unreadable : null,
+    textElements: entry.after ? entry.after.textElements : null,
+    worstText: (entry.after && entry.after.worstText) || [],
+    pxBefore,
+    pxAfter,
     rules: entry.stats.rules,
     bytes: entry.css.length,
     sheets: seam.sheets,
@@ -203,10 +295,22 @@ async function main() {
       console.log(`✗ ${r.url}\n    ERROR ${r.error}`);
       continue;
     }
-    const ok = r.after != null && r.after <= maxLight;
+    const worst = Math.max(r.after || 0, r.afterDoc || 0);
+    // Light fraction alone passes a page that is pitch dark and completely unreadable: a theme
+    // that darkens a surface without lightening the text on it scores 0%. So a page also fails
+    // when it leaves more unreadable text behind than it found — "more than it found" rather
+    // than "any", because a site can ship low-contrast text of its own and that is not ours.
+    const textWorse = r.unreadAfter != null && r.unreadAfter > (r.unreadBefore || 0);
+    const ok = r.after != null && worst <= maxLight && !textWorse;
     if (!ok) failed++;
     const sheets = r.sheets ? `sheets ${r.sheets.readable}+${r.sheets.extra} readable, ${r.sheets.blocked} blocked` : "";
     console.log(`${ok ? "✓" : "✗"} ${r.url}\n    ${r.strategy.padEnd(12)} light ${pct(r.before)} → ${pct(r.after)}   ${String(r.rules).padStart(4)} rules  ${String(Math.round(r.bytes / 1024)).padStart(3)} KB   model ${(r.modelMs / 1000).toFixed(1)}s${r.parsed ? "" : " (plan unparsed → default theme)"}   total ${(r.totalMs / 1000).toFixed(1)}s   ${sheets}${r.note ? "\n    " + r.note : ""}`);
+    console.log(`    page    light ${pct(r.beforeDoc)} → ${pct(r.afterDoc)}   (the whole document's wide light surfaces, not just the first screenful)`);
+    console.log(`    pixels  light ${pct(r.pxBefore)} → ${pct(r.pxAfter)}   (what the screenshot shows; photos and product art count, so it never reaches 0)`);
+    console.log(`    unread  text  ${String(r.unreadBefore ?? "?").padStart(4)} → ${String(r.unreadAfter ?? "?").padStart(4)} of ${r.textElements ?? "?"}   (contrast under 3:1 against the nearest painted surface — the number the light fractions cannot see)`);
+    for (const w of r.worstText || []) console.log(`      ${String(w.n).padStart(4)}×  ${w.pair}   ${w.by.join(", ")}`);
+    if (r.lightSurface)
+      console.log(`    biggest light surface left: ${r.lightSurface.w}×${r.lightSurface.h} = ${r.lightSurface.area}px² ${r.lightSurface.color}  ${r.lightSurface.by}   (an AREA, not a share: a box this size is conspicuous whatever the window width)`);
     if (r.stillLight && r.stillLight.length) console.log("    still light: " + r.stillLight.join("; "));
   }
   console.log(`\n${rows.length - failed}/${rows.length} pages ≤ ${Math.round(maxLight * 100)}% light after the theme.`);

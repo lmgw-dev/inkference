@@ -151,6 +151,21 @@ function withAlpha(hex, a) {
   return c ? formatColor({ ...c, a }) : hex;
 }
 
+// Put a replacement colour back into the shape the site wrote, when the site's alpha came from a
+// live token: `rgb(255 255 255/var(--tw-bg-opacity,1))` → `rgb(18 18 18/var(--tw-bg-opacity,1))`.
+// Writing a flat colour instead would be wrong, not merely untidy — the token is what Tailwind's
+// `/50` modifiers set, so a `bg-black/50` modal backdrop would become fully opaque and cover the
+// page. The channels go out space-separated whatever the source function was (`hsl(…/var(…))`
+// included): that is one well-formed colour, and the alpha expression is the probe's own capture
+// of a value the browser already parsed, so it cannot break out of the declaration.
+// A mapping that is itself translucent keeps its own alpha and the token is dropped — two alphas
+// cannot both apply, and the one we chose is the one that carries the design.
+function withAlphaVar(value, alpha) {
+  const c = parseColor(value);
+  if (!c || (c.a != null && c.a < 0.999)) return value;
+  return `rgb(${c.r} ${c.g} ${c.b}/${alpha})`;
+}
+
 // A token's role: what its var() consumers use it for; failing that, its name; failing
 // that, its lightness (light tokens are almost always backgrounds, dark ones text).
 // "mixed" is a real answer: a raw palette colour used as both a background and a text colour
@@ -158,14 +173,43 @@ function withAlpha(hex, a) {
 // recoloured at its definition without inverting half its uses — the compiler leaves such a
 // token alone and rewrites each consumer by that consumer's own role instead.
 export const MIXED_ROLE_SHARE = 0.8; // below this share for the top role a token is "mixed"
+// How much of the evidence must be the token's OWN before it outranks what it was lent.
+export const DIRECT_ROLE_SHARE = 0.25;
 export function inferTokenRole(name, used, value) {
-  const u = used || {};
+  const all = used || {};
+  // A token's OWN consumers outrank BORROWED ones, once they are a real share of the evidence.
+  // `propagateRoles` lends a token the roles of the tokens built from it, which is what lets a
+  // raw grey consumed only through `light-dark()` be classified at all — but a token that has
+  // enough consumers of its own already holds the better answer, and letting the loan outvote
+  // it inverts the role outright.
+  // Measured on an IMDb title page: `--ipt-on-base-color` IS the body text colour — value
+  // #000000, 27 `color:` consumers — while `--ipt-focus-outline-on-base-default` is defined as
+  // `var(--ipt-on-base-color)` and drawn 33× as a focus ring. Merged, that reads border 34 vs
+  // text 28, so the role came out `border`; `mapBorder` leaves an already-dark colour alone, so
+  // the token was rewritten NOWHERE — not at its definitions, not at the root — and every light
+  // section kept pure black text on the background we had just turned dark.
+  // The share is what keeps the correction from overshooting the other way: `--ipt-base-color`
+  // is the page's base SURFACE, with 59 of its 63 uses lent to it by the shade tokens built
+  // from it and only 4 of its own. Four uses are not evidence against sixty, and treating them
+  // as such turned the site's main background token into "mixed" and dropped its root pin.
+  const own = all.direct;
+  const ownTotal = own ? (own.bg || 0) + (own.text || 0) + (own.border || 0) : 0;
+  const allTotal = (all.bg || 0) + (all.text || 0) + (all.border || 0);
+  const u = ownTotal > 0 && ownTotal >= allTotal * DIRECT_ROLE_SHARE ? own : all;
   const total = (u.bg || 0) + (u.text || 0) + (u.border || 0);
   const top = ["bg", "text", "border"].sort((a, b) => (u[b] || 0) - (u[a] || 0))[0];
   if (total > 0) {
-    // Only background-vs-text is a conflict. A border drawn in the text colour lightens with
-    // the text and looks right either way, so border use never makes a token mixed.
-    const rival = top === "bg" ? u.text || 0 : top === "text" ? u.bg || 0 : 0;
+    // Text use is what cannot be overruled, and the conflict is ASYMMETRIC. A border drawn in
+    // the text colour lightens with the text and looks right either way, so a token that is
+    // mostly text stays text however often it is also a border. The reverse is not true: the
+    // border colour is picked to be a quiet divider, so it has no contrast against the surface
+    // BY DESIGN, and text painted with it cannot be read. Measured on Stack Overflow:
+    // `--black-300` (#babfc5) is drawn 11× as a border and 7× as text; it came out `border`,
+    // was recoloured at its definition to the theme's border tone, and its 7 text consumers
+    // became 32 runs of #3a3a3e text on the #0c0d0e page — 0% light by the census, unreadable
+    // to a reader. As `mixed` it is left alone at the definition and each consumer is rewritten
+    // by its own use, so the borders stay borders and the text becomes text.
+    const rival = top === "bg" ? u.text || 0 : top === "text" ? u.bg || 0 : u.text || 0;
     if (rival / total > 1 - MIXED_ROLE_SHARE) return "mixed";
     return top;
   }
@@ -183,7 +227,13 @@ export function inferTokenRole(name, used, value) {
 // built from. Returns a new name -> used map; iterates so chains of any depth settle.
 export function propagateRoles(tokens, chains) {
   const used = new Map();
-  for (const t of tokens || []) used.set(t.name, { ...(t.used || { bg: 0, text: 0, border: 0 }) });
+  // `direct` keeps the token's OWN consumer counts, untouched by what the loop below adds, so
+  // `inferTokenRole` can tell evidence from a loan. Without it a derived token's uses are
+  // indistinguishable from the parent's and can outvote them — see inferTokenRole.
+  for (const t of tokens || []) {
+    const own = { ...(t.used || { bg: 0, text: 0, border: 0 }) };
+    used.set(t.name, { ...own, direct: own });
+  }
   const edges = Object.entries(chains || {});
   for (let pass = 0; pass < 8 && edges.length; pass++) {
     let changed = false;
@@ -313,6 +363,12 @@ export function summarize(probe, census) {
     painted: c
       ? {
           lightFraction: c.lightFraction,
+          // The second, document-wide reading. It is in the summary and not only in `verify`
+          // because the model DESIGNS from `painted`: a page with a tall dark hero over a white
+          // body measures 0% light in the viewport, so without this the summary described a page
+          // that is already dark and the plan was built for that page (IMDb's title pages).
+          docLightFraction: c.docLightFraction,
+          docBackgrounds: capList(c.docBackgrounds || [], SUMMARY_CAP.backgrounds),
           canvas: c.canvas,
           backgrounds: capList(c.backgrounds, SUMMARY_CAP.backgrounds),
           text: capList(c.text, SUMMARY_CAP.text),
@@ -336,6 +392,18 @@ export function summarize(probe, census) {
 }
 
 // ---- the compiler ----------------------------------------------------------
+
+// Does every selector in this list end on an image? The subject of `.tile a img` is the image,
+// so a background there belongs to the picture. A list is only treated as one when ALL of its
+// selectors are (`.tile, .tile img` still paints a real surface).
+const IMG_SUBJECT = /(?:^|[\s>+~])(?:img|picture|video)(?:[.#:[][^\s>+~]*)?$/i;
+function imageSubject(sel) {
+  const parts = String(sel || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts.length > 0 && parts.every((s) => IMG_SUBJECT.test(s));
+}
 
 function emit(wrap, sel, decls) {
   return wrap.map((w) => w + "{").join("") + sel + "{" + decls.join(";") + "}" + "}".repeat(wrap.length);
@@ -389,36 +457,72 @@ export function compileSheet(probe, census, plan) {
       // (`--body-bg: var(--white)`) have no literal definition to recolour at all.
       if (role === "mixed" || !t.values.length) inPlace.add(t.name);
     }
+    const isLight = (c) => {
+      const p = parseColor(c);
+      return !!p && p.a >= 0.5 && luminance(p) > LIGHT_LUMINANCE;
+    };
     for (const r of probe.paint || []) {
       const decls = [];
+      const imgSel = imageSubject(r.sel);
       for (const d of r.d) {
+        // A background on an IMAGE is the picture's backdrop, not a surface of the page: a
+        // transparent PNG/AVIF has no background of its own, so the colour behind it is part
+        // of the picture and darkening it is what makes the product disappear. (An icon drawn
+        // as a data-URI SVG still gets recoloured — that is the glyph, role "text".)
+        if (imgSel && (d.p === "background-color" || (d.p === "background-image" && d.role !== "text"))) {
+          stats.skipped++;
+          continue;
+        }
         let mapped = null;
         if (d.var) {
           // A consumer of a token. Single-role tokens are rewritten at their definition and the
           // consumer follows; a mixed token is resolved here and mapped by THIS use's role.
+          const role = { color: "text", "text-decoration-color": "text", "caret-color": "text", "background-color": "bg" }[d.p] || "border";
           if (inPlace.has(d.var) && tokenValue.has(d.var)) {
-            const role = { color: "text", "text-decoration-color": "text", "caret-color": "text", "background-color": "bg" }[d.p] || "border";
             mapped = mapByRole(role, tokenValue.get(d.var), theme, palette);
             if (mapped) stats.consumers++;
+          } else if (d.fb && !tokenValue.has(d.var)) {
+            // `var(--token, #fff)` where the token is defined NOWHERE: the fallback literal is
+            // what actually paints, and nothing else will ever recolour it — the definition we
+            // would have rewritten does not exist. Guarded on the token being unknown to the
+            // probe, so a token that IS defined keeps winning through its own definition.
+            mapped = mapByRole(role, d.fb, theme, palette);
+            if (mapped) stats.consumers++;
           }
+        } else if (d.colors) {
+          // Checked BEFORE the token branch: a custom property can hold an icon rather than a
+          // colour (`--left-arrow-button: url("data:image/svg+xml,…")`), and that value is
+          // substituted the same way as any other multi-part one, not mapped as a colour.
+          // A multi-part value (gradient stops, a shadow's colour, an icon SVG's paint):
+          // substitute colour by colour and keep the rest of the value. `bg` only ever darkens
+          // a light colour, so an ordinary dark drop shadow passes through untouched; a data-URI
+          // icon comes in with role "text", so its dark glyph is lightened to stay readable on
+          // the surface we just darkened, and an already-light glyph is left alone.
+          const partRole = d.role === "text" ? "text" : "bg";
+          let v = d.v;
+          let changed = false;
+          for (const x of d.colors || []) {
+            const m = mapByRole(partRole, x.c, theme, palette);
+            if (!m) continue;
+            // `%23rrggbb` inside a data URI: put the replacement back in the same spelling, and
+            // leave the colour alone if the mapping is not a hex one that can be written that way.
+            const repl = x.pct ? (m[0] === "#" ? "%23" + m.slice(1) : null) : m;
+            if (!repl) continue;
+            v = v.split(x.s).join(repl);
+            changed = true;
+          }
+          mapped = changed ? v : null;
         } else if (d.p.startsWith("--")) {
           const role = tokenRole.get(d.p) || "?";
           mapped = role === "?" || inPlace.has(d.p) ? null : mapByRole(role, d.v, theme, palette);
           if (mapped) stats.tokens++;
-        } else if (d.p === "background-image") {
-          let v = d.v;
-          let changed = false;
-          for (const x of d.colors || []) {
-            const m = mapByRole("bg", x.c, theme, palette);
-            if (!m) continue;
-            v = v.split(x.s).join(m);
-            changed = true;
-          }
-          mapped = changed ? v : null;
         } else {
           const role = { color: "text", "text-decoration-color": "text", "caret-color": "text", "background-color": "bg" }[d.p] || "border";
           mapped = mapByRole(role, d.v, theme, palette);
         }
+        // One place for every branch above, so a token DEFINITION written this way
+        // (`--surface: rgb(255 255 255/var(--op,1))`) is restored the same as a plain declaration.
+        if (mapped && d.alpha) mapped = withAlphaVar(mapped, d.alpha);
         if (mapped) decls.push(`${d.p}:${mapped} !important`);
         else stats.skipped++;
       }
@@ -426,6 +530,80 @@ export function compileSheet(probe, census, plan) {
       out.push(emit(r.wrap || [], r.sel, decls));
       stats.rules++;
       stats.decls += decls.length;
+    }
+
+    // A token can be IN FORCE at the root with no declaration we are able to rewrite. The loop
+    // above only ever rewrites declarations the probe SAW, so a root value that comes from
+    // somewhere no readable rule sets leaves every consumer painting the old colour — and the
+    // site's own rules keep working, so nothing looks broken, the page just stays light.
+    // Measured on an IMDb title page: `--ipt-base-bg` computes to white on <html>, while the
+    // only declarations of it the probe found sit on four hashed styled-components classes that
+    // are NOT ancestors of the white sections, so rewriting them changed nothing — the page
+    // stayed 93% document-light with 214 of our rules applied. Defining the same tokens at
+    // :root took it to 1%.
+    //
+    // So every token the compiler has already decided to rewrite is ALSO emitted at the root,
+    // with the value in force there. This adds no new decision: same role, same mapping, same
+    // tokens — only a place to put them where nothing else does. Held back are only the tokens
+    // whose consumers are rewritten in place anyway (mixed or chain — `inPlace`).
+    //
+    // A token the site RE-POINTS inside a section (GitHub's dark header) needs no guard here,
+    // which is worth knowing because the obvious guard is wrong: a root pin can never override a
+    // section's own declaration of the same token, `!important` or not. The two declarations
+    // apply to DIFFERENT elements — ours to <html>, the site's to the section — and a descendant
+    // inherits from the nearest ancestor that has a value. Importance only settles a conflict on
+    // one element; proximity settles this one. Measured on a fixture that re-points a token to
+    // #24292f inside a section: with the root pinned to #121212 the section still computes
+    // #24292f.
+    const rootDecls = [];
+    for (const t of probe.tokens || []) {
+      if (inPlace.has(t.name)) continue;
+      const role = tokenRole.get(t.name) || "?";
+      if (role === "?") continue;
+      const value = t.computed || (t.values || [])[0];
+      const mapped = value && mapByRole(role, value, theme, palette);
+      if (mapped) rootDecls.push(`${t.name}:${mapped} !important`);
+    }
+    if (rootDecls.length) {
+      out.push(`:root{${rootDecls.join(";")}}`);
+      stats.rules++;
+      stats.decls += rootDecls.length;
+      stats.rootTokens = rootDecls.length;
+    }
+
+    // The surface goes dark, but a transparent picture keeps the backdrop it was drawn for.
+    // The probe reports an image that covers a real share of the surface painting behind it,
+    // together with every colour that surface takes across the elements the selector reaches;
+    // the backdrop is honoured only if they are ALL light, so an image that was already on a
+    // dark surface (a sprite in a dark nav) keeps it. The selector is built by the probe from
+    // class names that are CSS identifiers already, and its shape is re-checked here because
+    // this string goes into our stylesheet.
+    for (const b of probe.imageBackdrops || []) {
+      const colors = (b.colors || []).filter(Boolean);
+      if (!b.sel || !/^(?:\.[\w-]+)+ img$/.test(b.sel)) continue;
+      if (!colors.length || !colors.every(isLight)) continue;
+      // A multiply/darken blend assumes the light surface we just took away; against a dark one
+      // it swallows the picture AND the backdrop, so it is switched off together with them.
+      const decl = `background-color:${colors[0]} !important` + (b.blend ? ";mix-blend-mode:normal !important" : "");
+      out.push(`${b.sel}{${decl}}`);
+      stats.rules++;
+      stats.decls++;
+      stats.backdrops = (stats.backdrops || 0) + 1;
+    }
+
+    // A small control whose content is a RASTER icon keeps its surface colour: the glyph lives
+    // in a sprite we cannot read, let alone recolour, so darkening what it sits on is the one
+    // change that makes it disappear for good. Honoured only where every element the selector
+    // reaches is light today, so a control that was always dark is not relit. The selector's
+    // shape is re-checked here because this string goes into our stylesheet.
+    for (const s of probe.iconSurfaces || []) {
+      const colors = (s.colors || []).filter(Boolean);
+      if (!s.sel || !/^(?:\.[\w-]+)+$/.test(s.sel)) continue;
+      if (!colors.length || !colors.every(isLight)) continue;
+      out.push(`${s.sel}{background-color:${colors[0]} !important}`);
+      stats.rules++;
+      stats.decls++;
+      stats.iconSurfaces = (stats.iconSurfaces || 0) + 1;
     }
   }
   if (plan && plan.css) out.push(plan.css);

@@ -32,6 +32,13 @@
     color: "text",
     "background-color": "bg",
     "background-image": "bg",
+    // A box-shadow is a BACKGROUND here, not an effect: amazon.de paints its page gutters with
+    // `box-shadow: rgb(240,242,242) 0 0 0 2000px` on the centred deck, and nothing else paints
+    // them. It is doubly invisible — the colour sits in a multi-part value, and the shadow
+    // falls OUTSIDE the element's box and is not hit-testable, so the paint census cannot see
+    // it either and reports such a page as fully dark. Mapped by the bg role, which darkens a
+    // light colour and leaves an already-dark one (an ordinary drop shadow) alone.
+    "box-shadow": "bg",
     "border-top-color": "border",
     "border-right-color": "border",
     "border-bottom-color": "border",
@@ -45,6 +52,24 @@
   const SHORTHAND_ROLE = { background: "bg", border: "border", "border-color": "border", outline: "border" };
   const SHORTHAND_LONGHAND = { background: "background-color", border: "border-color", "border-color": "border-color", outline: "outline-color" };
   const THEME_ATTRS = ["data-theme", "data-color-mode", "data-color-scheme", "data-mode", "data-scheme", "data-bs-theme"];
+
+  // A `background-image` is usually a surface (a gradient), but a data-URI SVG is an ICON: the
+  // glyph is drawn in markup we can read, so its colours belong to the TEXT role, not the bg
+  // one. amazon.de's carousel arrows are `url("data:image/svg+xml,<svg … fill='#0F1111'/>")`
+  // on a white button — darken the button by the bg role and the arrow is black on black.
+  // Only the inline-markup form (base64 is opaque to us) and only icon-sized colour counts:
+  // more than a few literals means an illustration, and recolouring one flattens it.
+  // The markup inside the URL is usually PERCENT-ENCODED — `%3Csvg … fill='%230F1111'%3E` —
+  // and the quotes around attributes may be backslash-escaped by the serialiser, so both
+  // spellings have to be recognised and a replacement written back in the same encoding.
+  const DATA_SVG = /url\(\s*(?:\\?["'])?data:image\/svg\+xml[,;]/i;
+  const SVG_BASE64 = /data:image\/svg\+xml[^,]*;base64/i;
+  const SVG_MAX_COLORS = 4;
+  const SVG_MAX_LEN = 8000;
+  // Inside SVG markup a colour is taken only from a paint attribute/property, never by
+  // scanning for "#…": `url(#someId)` references a gradient and rewriting it breaks the icon.
+  const SVG_PAINT =
+    /(?:fill|stroke|stop-color|flood-color|lighting-color)\s*(?::|=|%3A|%3D)\s*(?:\\?["']|%22|%27)?\s*((?:#|%23)[0-9a-f]{3,8}|rgba?\([^()]*\))/gi;
 
   // A compound at the START of a selector that can switch a theme: optional root
   // (:root/html/body) followed only by classes/attributes, one of which names a theme —
@@ -87,6 +112,71 @@
     }
     colorCache.set(k, out);
     return out;
+  };
+
+  // A colour whose CHANNELS are literal but whose ALPHA comes from a var(). This is Tailwind's
+  // opacity pattern — `background-color: rgb(255 255 255/var(--tw-bg-opacity,1))` — and EVERY
+  // `bg-*`, `text-*` and `border-*` utility it ships is written that way, so on a Tailwind site
+  // it is most of the page's paint. The value contains `var(`, so it used to fall into the
+  // token-consumer branch, where the "the whole value is one var()" test fails: the declaration
+  // was recorded NOWHERE, and `--tw-bg-opacity` — a NUMBER — was tallied as a colour token with
+  // a background role. Measured on kleinanzeigen.de: 5450 style rules, 338 paint declarations,
+  // 8 "colour tokens" (all of them opacity numbers), and `.bg-background` / `.bg-surface` —
+  // which paint the body, the 2000×2529 page grid and every card — in none of them. The
+  // document stayed 100% white while the compiler reported a confident 107 rules.
+  // The colour here is perfectly knowable; only the opacity is not. So canonicalise it at full
+  // alpha and keep the alpha expression verbatim, so the compiler can write its replacement back
+  // in the SAME shape — which matters, because the token is live: a `bg-black/50` modal backdrop
+  // sets `--tw-bg-opacity: 0.5`, and flattening that to an opaque colour would paint over the page.
+  // The channels are matched as `[^()]*?` so anything nested there (`rgb(var(--ch), …)`, Bootstrap's
+  // `rgba(var(--bs-body-color-rgb), .5)`) does NOT match: there the colour itself is unknown and
+  // this is the wrong tool. Known gap, left deliberately — it needs the token read as channels.
+  // `;` and `}` are excluded from both the channels and the alpha expression. The value comes out
+  // of the CSSOM, so the browser has already parsed and re-serialised it and it cannot carry
+  // either — but this text is written into OUR stylesheet, so the guarantee is made locally
+  // rather than relied on from two files away.
+  const ALPHA_VAR = /(rgba?|hsla?)\(\s*([^(){};]*?)\s*[,/]\s*(var\((?:[^(){};]|\([^(){};]*\))*\))\s*\)/i;
+  const alphaVarAt = (raw) => {
+    const m = ALPHA_VAR.exec(raw == null ? "" : String(raw));
+    if (!m) return null;
+    const c = canon(m[1] + "(" + m[2] + ")");
+    return c ? { c: c, alpha: m[3], s: m[0] } : null;
+  };
+  // The whole value is one such colour — a longhand declaration. The shorthand loop uses
+  // `alphaVarAt` instead, because Gecko turns every longhand of a shorthand holding a var() into
+  // an empty "pending substitution" value: `border: 1px solid rgb(203 213 225/var(--x,1))` leaves
+  // `border-top-color` reading "" and the whole value readable only as `border`, lengths and all.
+  const alphaVar = (raw) => {
+    const s = raw == null ? "" : String(raw).trim();
+    const hit = alphaVarAt(s);
+    return hit && hit.s === s ? hit : null;
+  };
+
+  // The paint colours of an icon written as an inline data-URI SVG, or null when this value is
+  // not one we may touch. Shared by the two places such a value turns up: a `background-image`
+  // declaration, and a custom property that a `background-image` later consumes — amazon.de's
+  // rounded carousel arrows are `background-image: var(--left-arrow-button)`, so the markup with
+  // the glyph's colour sits in the TOKEN, and reading only literal declarations left that arrow
+  // black on the button we had just darkened.
+  const svgPaints = (raw) => {
+    if (!DATA_SVG.test(raw) || raw.length > SVG_MAX_LEN || SVG_BASE64.test(raw)) return null;
+    const seen = new Set();
+    const cols = [];
+    SVG_PAINT.lastIndex = 0;
+    let m;
+    while ((m = SVG_PAINT.exec(raw))) {
+      const lit = m[1];
+      if (seen.has(lit)) continue;
+      seen.add(lit);
+      // `%230f1111` is `#0f1111` written for a URL: canonicalise the colour, but keep the
+      // source spelling so the substitution puts the new colour back the same way.
+      const pct = lit.slice(0, 3).toLowerCase() === "%23";
+      const c = canon(pct ? "#" + lit.slice(3) : lit);
+      if (c) cols.push(pct ? { s: lit, c, pct: 1 } : { s: lit, c });
+    }
+    // More than a few literals means an illustration, and recolouring one flattens it.
+    if (!cols.length || cols.length > SVG_MAX_COLORS) return null;
+    return cols;
   };
 
   const result = {
@@ -157,9 +247,22 @@
     // A declaration whose whole value is one var() is recorded as a CONSUMER of that token
     // ({ p, var }): the compiler rewrites it in place when the token's role is mixed (a raw
     // palette colour used as both background and text cannot be recoloured at its definition).
+    // The fallback is kept too ({ fb }): `var(--token, #fff)` paints the LITERAL whenever the
+    // token is never defined, and a site can ship a whole widget that way — Amazon's SFS cards
+    // are `background: var(--aok-sfs-color-page-primary-normal-bg, #fff)` with that token
+    // defined nowhere. Without the literal the compiler has no value for the declaration and
+    // skips it, so the card stays white however long we wait for more stylesheets.
     const noteConsumer = (d, p, raw) => {
-      const m = /^var\(\s*(--[\w-]+)\s*(?:,[^)]*)?\)$/.exec(raw.trim());
-      if (m) d.push({ p, var: m[1] });
+      // The fallback is taken greedily up to the LAST ")", so a parenthesised one
+      // (`var(--x, rgb(247,247,247))`) is seen — the old `[^)]*` stopped at the inner paren and
+      // the declaration was not even recorded as a consumer. A fallback that is not a plain
+      // colour (a nested var(), a shadow) simply canon()s to null and only the token is kept.
+      const m = /^var\(\s*(--[\w-]+)\s*(?:,\s*([\s\S]*))?\)$/.exec(raw.trim());
+      if (!m) return;
+      const e = { p, var: m[1] };
+      const fb = m[2] && canon(m[2].trim());
+      if (fb) e.fb = fb;
+      d.push(e);
     };
 
     const visit = (style) => {
@@ -174,7 +277,11 @@
         }
         if (p.startsWith("--")) {
           if (/light-dark\(/i.test(raw)) result.counts.lightDarkDecls++;
-          if (/var\(/.test(raw)) {
+          // Checked before the chain branch: `--surface: rgb(255 255 255/var(--op,1))` is a
+          // colour this token HOLDS, not a token it is built from. Treated as a chain it would
+          // lend its role to an opacity number and keep no value of its own.
+          const avT = alphaVar(raw);
+          if (!avT && /var\(/.test(raw)) {
             // A token defined from other tokens (`--bg: var(--gray-90)`, `light-dark(var(--a),
             // var(--b))`): the referenced tokens inherit this one's role in the compiler.
             const refs = [];
@@ -191,9 +298,19 @@
             }
             continue;
           }
-          const c = canon(raw);
+          // A token holding an icon, not a colour: `--left-arrow-button: url("data:image/
+          // svg+xml,…")`. It is recoloured at its DEFINITION, so every consumer follows and
+          // we need no rule per consumer — and it is deliberately NOT registered as a colour
+          // token, since its value is a url() that no role mapping could read.
+          const icon = svgPaints(raw);
+          if (icon) {
+            for (const x of icon) tallyColor("text", x.c);
+            d.push({ p, v: raw, colors: icon, role: "text" });
+            continue;
+          }
+          const c = avT ? avT.c : canon(raw);
           if (!c) continue;
-          d.push({ p, v: c });
+          d.push(avT ? { p, v: c, alpha: avT.alpha } : { p, v: c });
           let t = tokenDefs.get(p);
           if (!t) {
             t = { values: new Set(), defs: 0 };
@@ -206,26 +323,49 @@
         const role = PROP_ROLE[p];
         if (!role) continue;
         if (/light-dark\(/i.test(raw)) result.counts.lightDarkDecls++;
+        // Before the consumer branch: the var() here is an OPACITY, not the colour. Tallying it
+        // as a colour token is what gave kleinanzeigen.de eight "colour tokens" that were all
+        // numbers, and falling through to `noteConsumer` recorded the declaration nowhere at all.
+        const av = alphaVar(raw);
+        if (av) {
+          tallyColor(role, av.c);
+          d.push({ p, v: av.c, alpha: av.alpha });
+          continue;
+        }
         if (/var\(/.test(raw)) {
           tallyRole(raw, role);
           noteConsumer(d, p, raw);
           continue;
         }
-        if (p === "background-image") {
-          if (!/gradient\(/i.test(raw) || /url\(/i.test(raw)) continue;
-          const seen = new Set();
-          const cols = [];
-          const re = /#[0-9a-f]{3,8}\b|rgba?\([^()]*\)|hsla?\([^()]*\)/gi;
-          let m;
-          while ((m = re.exec(raw))) {
-            if (seen.has(m[0])) continue;
-            seen.add(m[0]);
-            const c = canon(m[0]);
-            if (c) cols.push({ s: m[0], c });
+        // Multi-part values whose colours must be substituted inside the value rather than
+        // replaced wholesale: a gradient's stops, a shadow's colour next to its lengths, an
+        // icon SVG's paint. The value we re-emit is the BROWSER's serialisation of the one it
+        // already parsed, so it is a well-formed token and cannot break out of our declaration.
+        if (p === "background-image" || p === "box-shadow") {
+          let partRole = "bg";
+          let cols = null;
+          if (p === "background-image" && DATA_SVG.test(raw)) {
+            // an icon's glyph, which must stay readable on the darkened surface
+            partRole = "text";
+            cols = svgPaints(raw);
+            if (!cols) continue; // base64 markup is opaque to us, an illustration is too rich
+          } else {
+            if (p === "background-image" && (!/gradient\(/i.test(raw) || /url\(/i.test(raw))) continue;
+            const seen = new Set();
+            cols = [];
+            const re = /#[0-9a-f]{3,8}\b|rgba?\([^()]*\)|hsla?\([^()]*\)/gi;
+            let m;
+            while ((m = re.exec(raw))) {
+              const lit = m[0];
+              if (seen.has(lit)) continue;
+              seen.add(lit);
+              const c = canon(lit);
+              if (c) cols.push({ s: lit, c });
+            }
+            if (!cols.length) continue;
           }
-          if (!cols.length) continue;
-          for (const x of cols) tallyColor("bg", x.c);
-          d.push({ p, v: raw, colors: cols });
+          for (const x of cols) tallyColor(partRole, x.c);
+          d.push(partRole === "bg" ? { p, v: raw, colors: cols } : { p, v: raw, colors: cols, role: partRole });
           continue;
         }
         const c = canon(raw);
@@ -241,6 +381,21 @@
           continue;
         }
         if (!raw || !/var\(/.test(raw)) continue;
+        // An alpha-var colour is a COLOUR, so it is recorded as one rather than tallying the
+        // opacity token as paint. It has to be caught here and not left to the longhand loop:
+        // Firefox serialises `border: 1px solid rgb(0 0 0/var(--x,1))` as the shorthand
+        // `border-color`, which is in no PROP_ROLE, so the loop above never sees it and skipping
+        // here lost every border Tailwind draws. Recorded only when the longhand is not already
+        // in hand, so a value that DID expand is not counted twice.
+        const avS = alphaVarAt(raw);
+        if (avS) {
+          const lh = SHORTHAND_LONGHAND[sh];
+          if (!d.some((e) => e.p === lh)) {
+            tallyColor(SHORTHAND_ROLE[sh], avS.c);
+            d.push({ p: lh, v: avS.c, alpha: avS.alpha });
+          }
+          continue;
+        }
         tallyRole(raw, SHORTHAND_ROLE[sh]);
         noteConsumer(d, SHORTHAND_LONGHAND[sh], raw);
       }
@@ -358,6 +513,14 @@
     // inline declaration, and the same template markup on the site's other pages matches too.
     // Values a CSS string would need escapes for are skipped rather than escaped: the selector
     // is page text going into our sheet.
+    //
+    // Colour CUSTOM PROPERTIES set inline are kept too (not filtered out): a component framework
+    // may theme its subtree by writing a token on a wrapper (`<div style="--background-color:#fff">`,
+    // Amazon's DCL cards) that children consume with `var(--background-color)`. The token is in no
+    // sheet, so rewriting its definition means rewriting it HERE —
+    // `[style="…"]{--background-color:<dark> !important}` — and every `var()` consumer follows.
+    // The compiler still only emits a token whose role is unambiguous (name or consumers); a
+    // "mixed"/roleless one is skipped there, so a token used both ways is never inverted.
     const INLINE_CAP = 4000;
     const inlineSeen = new Set();
     let inline = 0;
@@ -367,7 +530,7 @@
       if (!attr || attr.length > 300 || inlineSeen.has(attr) || /["\\\n\r\f<>{}]/.test(attr)) continue;
       inlineSeen.add(attr);
       inline++;
-      const d = visit(el.style).filter((x) => !x.p.startsWith("--"));
+      const d = visit(el.style);
       if (d.length) paint.push({ sel: `[style="${attr}"]`, wrap: [], d });
     }
     result.counts.inlineStyles = inlineSeen.size;
@@ -382,6 +545,159 @@
       tallyColor("bg", c);
       paint.push({ sel: `[bgcolor="${attr}"]`, wrap: [], d: [{ p: "background-color", v: c }] });
     }
+
+    // ---- which light surfaces are a PICTURE's background ---------------------
+    // A TRANSPARENT image has no background of its own: the surface behind it IS the picture's
+    // background. amazon.de's product art is transparent AVIF on a white card — measured by
+    // forcing the cards magenta and counting the pixels inside each image's own box: 43-90% of
+    // it showed through. Darken the card and a dark product vanishes into it.
+    //
+    // So where an image covers a real share of the nearest surface that actually paints, that
+    // surface's colour is preserved AS A BACKDROP ON THE IMAGE while the surface itself still
+    // goes dark. Three things make this safe, each one measured on amazon.de:
+    //   - COVER separates a picture's background from a surface an image merely sits on:
+    //     product art fills 63-76% of its card, a banner on a page-wide section fills 0-2% and
+    //     must not put a light box behind every image on the page.
+    //   - An image that already carries an opaque background of its own has its backdrop
+    //     (the site put the white straight on the <img>); that rule is kept untouched by the
+    //     compiler instead, and overriding it with an ancestor's colour would be wrong.
+    //   - LIGHTNESS is not decided here: every colour the selector's images sit on is reported
+    //     and the compiler drops the candidate unless they are all light, so an image already
+    //     on a dark surface (amazon.de's nav sprite, luminance 0.03) keeps it and the threshold
+    //     stays in one place.
+    // The selector is read off the real host element rather than taken from the rule that
+    // painted it: a site's own rule is often far broader than the cards it styles here
+    // (amazon.de paints these through `.a-cardui`, which is every card on the page), and it
+    // ships the same card under two CSS-module prefixes depending on the load.
+    const BACKDROP_COVER = 0.25;
+    const BACKDROP_IMG_CAP = 400;
+    const BACKDROP_MATCH_CAP = 200;
+    const opaqueBg = (c) => {
+      const m = /^rgba?\(([^)]*)\)$/.exec(c || "");
+      if (!m) return false;
+      const parts = m[1].split(",");
+      return parts.length < 4 || parseFloat(parts[3]) >= 0.5;
+    };
+    // Built from class names only, and only from ones that are CSS identifiers already - the
+    // selector goes into our stylesheet, so nothing that would need escaping is used.
+    const classSel = (el) => {
+      const cls = (typeof el.className === "string" ? el.className : "")
+        .trim()
+        .split(/\s+/)
+        .filter((c) => /^[A-Za-z_-][\w-]*$/.test(c));
+      return cls.length ? "." + cls.slice(0, 3).join(".") : "";
+    };
+    // The surface an image is drawn on, or null when the image brings its own.
+    const backdropOf = (img) => {
+      if (opaqueBg(getComputedStyle(img).backgroundColor)) return null;
+      let n = img.parentElement;
+      while (n && n !== document.documentElement) {
+        const raw = getComputedStyle(n).backgroundColor;
+        if (opaqueBg(raw)) {
+          const c = canon(raw);
+          return c ? { el: n, color: c } : null;
+        }
+        n = n.parentElement;
+      }
+      return null;
+    };
+    const backdrops = new Map();
+    let imgSeen = 0;
+    for (const img of document.images) {
+      if (imgSeen >= BACKDROP_IMG_CAP) break;
+      const ib = img.getBoundingClientRect();
+      if (ib.width < 24 || ib.height < 24) continue;
+      imgSeen++;
+      const hit = backdropOf(img);
+      if (!hit || hit.el === document.body) continue;
+      const hb = hit.el.getBoundingClientRect();
+      const area = hb.width * hb.height;
+      if (!area || (ib.width * ib.height) / area < BACKDROP_COVER) continue;
+      const sel = classSel(hit.el);
+      if (!sel || backdrops.has(sel)) continue;
+      let hits;
+      try {
+        hits = document.querySelectorAll(sel + " img");
+      } catch (_) {
+        continue;
+      }
+      if (!hits.length || hits.length > BACKDROP_MATCH_CAP) continue;
+      // Every image the selector reaches - not just the one that led here, which is why one
+      // on an already-dark surface drops the whole candidate in the compiler.
+      const colors = new Set();
+      let blend = 0;
+      for (const e of hits) {
+        const b = backdropOf(e);
+        if (b) colors.add(b.color);
+        // A DARKEN-type blend only works against a light backdrop: amazon.de draws its product
+        // art with `mix-blend-mode: multiply` so the picture's white melts into the white card.
+        // Multiply against a dark surface is dark whatever the picture holds — measured, these
+        // images went from 0% light pixels to 40-97% with the blend switched off, and even the
+        // backdrop we put back is multiplied away. Where we darken what is behind it, the blend
+        // has to go, so it is reported with the candidate it belongs to.
+        const mode = getComputedStyle(e).mixBlendMode;
+        if (mode === "multiply" || mode === "darken") blend = 1;
+      }
+      if (colors.size) backdrops.set(sel, { colors: Array.from(colors), blend });
+    }
+    result.imageBackdrops = Array.from(backdrops, ([sel, v]) => ({ sel: sel + " img", colors: v.colors, blend: v.blend }));
+
+    // A RASTER icon cannot be recoloured. An SVG written into the CSS has readable markup, so
+    // its glyph is lightened; a sprite PNG is pixels on a server, and a cross-origin image
+    // taints a canvas, so nothing in the page can even tell us whether it is dark. Darkening
+    // the surface under one therefore hides it for good — amazon.de's search button is the
+    // orange `.nav-search-submit` with the magnifier drawn from the nav sprite, and it went to
+    // a dark brown square with nothing on it.
+    // So that surface keeps its colour instead. The guards keep it to the one safe shape, a
+    // BUTTON: the surface must be small, the icon must cover a real share of it, and neither
+    // may carry text of its own — a sprite sitting in a wide toolbar or a page section is left
+    // alone rather than leaving a large light patch behind.
+    const ICON_HOST_MAX = 200; // px per side: a control, not a region of the page
+    const ICON_COVER = 0.25;
+    const ICON_SCAN_CAP = 4000;
+    const ownText = (el) => {
+      for (const n of el.childNodes) if (n.nodeType === 3 && n.nodeValue.trim()) return true;
+      return false;
+    };
+    const iconKeeps = new Map();
+    let scanned = 0;
+    for (const el of document.querySelectorAll("[class]")) {
+      if (scanned >= ICON_SCAN_CAP) break;
+      scanned++;
+      const cs = getComputedStyle(el);
+      const bi = cs.backgroundImage || "none";
+      // Only a real raster url(): a gradient is a surface, and a data-URI SVG we recolour.
+      if (bi.indexOf("url(") < 0 || /gradient\(/i.test(bi) || /data:image\/svg/i.test(bi)) continue;
+      const ib = el.getBoundingClientRect();
+      if (ib.width < 8 || ib.height < 8 || ib.width > ICON_HOST_MAX || ib.height > ICON_HOST_MAX) continue;
+      if (ownText(el)) continue;
+      if (opaqueBg(cs.backgroundColor)) continue; // paints its own surface; nothing behind it to keep
+      const hit = backdropOf(el);
+      if (!hit || hit.el === document.body) continue;
+      const hb = hit.el.getBoundingClientRect();
+      const area = hb.width * hb.height;
+      if (!area || hb.width > ICON_HOST_MAX || hb.height > ICON_HOST_MAX) continue;
+      if ((ib.width * ib.height) / area < ICON_COVER) continue;
+      if (ownText(hit.el)) continue;
+      const sel = classSel(hit.el);
+      if (!sel || iconKeeps.has(sel)) continue;
+      let hits;
+      try {
+        hits = document.querySelectorAll(sel);
+      } catch (_) {
+        continue;
+      }
+      if (!hits.length || hits.length > BACKDROP_MATCH_CAP) continue;
+      // Every element the selector reaches, so one of them already sitting dark drops the
+      // candidate in the compiler rather than relighting a surface that was never light.
+      const colors = new Set();
+      for (const e of hits) {
+        const c = canon(getComputedStyle(e).backgroundColor);
+        if (c) colors.add(c);
+      }
+      if (colors.size) iconKeeps.set(sel, Array.from(colors));
+    }
+    result.iconSurfaces = Array.from(iconKeeps, ([sel, colors]) => ({ sel, colors }));
 
     result.counts.paintRules = paint.length;
     result.counts.tokenDefs = tokenDefs.size;

@@ -188,6 +188,15 @@ export const DARK_MODE_SYSTEM_PROMPT =
   "included — through your palette, as !important user-origin CSS, and re-emits a " +
   "prefers-color-scheme:dark block if you choose the native theme. You choose the STRATEGY " +
   "and the COLOURS.\n\n" +
+  "`painted` carries TWO independent readings and you must weigh both. " +
+  "`lightFraction` and `backgrounds`/`text` describe the FIRST SCREENFUL only (a hit-tested " +
+  "grid). `docLightFraction` and `docBackgrounds` describe the WHOLE DOCUMENT: the share of its " +
+  "height covered by wide light surfaces, and their colours. A page can read 0% light in the " +
+  "viewport and 70% light over the document — a tall dark hero above a white body (a film or " +
+  "product title page). That page is NOT already dark: design for the light colours in " +
+  "`docBackgrounds` and in `colors.bg`, and pin the page background from those, not from the " +
+  "dark hero colour that happens to dominate the first screen. Never answer that nothing needs " +
+  "doing because the viewport reads dark.\n\n" +
   "Strategies:\n" +
   "1. native-theme — only when `hooks` shows a real site-wide dark theme: a root-level hook " +
   "(a class like .dark or an attribute like [data-theme=dark] on html/body) backing DOZENS of " +
