@@ -6,6 +6,7 @@ import { getPrefs, set, DEFAULTS, GROUNDING_SAME } from "../common/storage.js";
 import { normalizeModels, normalizeAudioModels, ttsModels } from "../background/models.js";
 import { speech, fetchVoices, fetchModels } from "../background/gateway.js";
 import { formatPricePair } from "../common/util.js";
+import { filterableSelect } from "./selectfilter.js";
 
 const $ = (id) => document.getElementById(id);
 const gateway = $("gateway");
@@ -17,6 +18,14 @@ const ttsVoice = $("ttsVoice");
 const ttsSpeed = $("ttsSpeed");
 const groundingSel = $("groundingModel");
 const startPage = $("startPage");
+
+// The three model selects get a filter row inside their dropdown — the gateway can list
+// hundreds of ids and a native select only type-aheads on the FIRST characters, which every
+// cloud id shares (`kilo/…`). The selects themselves stay the value holders, so everything
+// below still reads `.value` and listens for `change`; only the face changes. Done after the
+// lookups above, since the enhancer moves each id onto the control the user actually clicks
+// (so <label for=…> keeps working).
+for (const sel of [modelSel, groundingSel, ttsModelSel]) filterableSelect(sel);
 
 // One <audio> for the Test button. Playing it is a direct response to a click, so no
 // autoplay policy is involved here.

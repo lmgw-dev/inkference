@@ -18,6 +18,28 @@
       #status { margin-left: .5rem; font-size: .9em; }
       .ok { color: #2a9d3f; }
       .err { color: #c83737; }
+
+      /* A <select> with a filter row inside it (options/selectfilter.js). The real select is
+         still there, hidden, holding the options and the value; this is only its face. */
+      .sf { position: relative; }
+      .sf > select { display: none; }
+      .sf-field { display: flex; align-items: center; gap: .5rem; width: 100%; padding: .5rem;
+        font: inherit; box-sizing: border-box; text-align: left; cursor: pointer;
+        background: Field; color: FieldText; border: 1px solid #8886; border-radius: 3px; }
+      .sf-field:focus-visible { outline: 2px solid AccentColor; outline-offset: -1px; }
+      .sf-value { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .sf-value.sf-placeholder { color: #888; }
+      .sf-caret { color: #888; font-size: .75em; }
+      .sf-pop { position: absolute; z-index: 10; left: 0; right: 0; top: calc(100% + 2px);
+        padding: .35rem; box-sizing: border-box; background: Canvas; color: CanvasText;
+        border: 1px solid #8886; border-radius: 3px; box-shadow: 0 6px 20px #0006; }
+      .sf-search { width: 100%; padding: .4rem; font: inherit; box-sizing: border-box; }
+      .sf-list { max-height: 16rem; overflow-y: auto; margin-top: .35rem; }
+      .sf-row { padding: .35rem .5rem; border-radius: 3px; cursor: pointer;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .sf-row[aria-selected="true"] { font-weight: 600; }
+      .sf-row.sf-active { background: AccentColor; color: AccentColorText; }
+      .sf-empty { padding: .5rem; color: #888; }
     </style>
   </head>
   <body>
@@ -41,7 +63,9 @@
 
     <label for="model">Default model</label>
     <select id="model"></select>
-    <div class="hint">Used when the sidebar hasn't picked one yet. Populated from the gateway.</div>
+    <div class="hint">Used when the sidebar hasn't picked one yet. Populated from the gateway.
+      Open the list and type in its filter row to narrow it — any part of an id matches
+      (<code>glm</code>, <code>qwen</code>).</div>
 
     <label for="system">System prompt</label>
     <textarea id="system" rows="5"></textarea>
