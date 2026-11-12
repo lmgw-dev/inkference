@@ -14,12 +14,57 @@
   const ROWS = 20;
   const MEDIA = new Set(["img", "video", "canvas", "svg", "picture", "iframe", "object", "embed"]);
 
-  const parse = (v) => {
-    const m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+%?))?\s*\)$/i.exec(v || "");
-    if (!m) return null;
+  const RGB = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+%?))?\s*\)$/i;
+  // Gecko serialises a computed colour in the space the AUTHOR wrote it in, so an rgb()-only
+  // reader is not a reader of computed colours — it is a reader of old stylesheets. Tailwind v4
+  // ships its palette in oklch(), and the colour comes back as `lab(1.90334 0.278696 -5.48866)`.
+  // That returned null here, and a colour that does not parse is silently DROPPED from the
+  // readability check — the measure cannot report what it cannot read. Measured on
+  // tailwindcss.com: `unreadable 0 of 57` while the h1 stood at #030712 on #121212, a contrast
+  // of 1.04:1, plainly unreadable in the screenshot. Worse than a wrong number, it was a wrong
+  // number that looked like success, and it is the reason a round of "80 → 0 unreadable" was
+  // reported here that had repaired nothing.
+  // So anything the fast path misses goes through a canvas fillStyle — the same trick
+  // restyle-probe.js's `canon` already uses, which is why the COMPILER never had this blind
+  // spot: the browser normalises every colour syntax it knows (lab, oklch, color(), hsl, named)
+  // to #rrggbb or rgba(). Invalid input is detected by setting the value over two different
+  // sentinels: fillStyle keeps its previous value when assigned something it cannot parse, so a
+  // value that survives BOTH is a real colour and one that yields each sentinel back is not.
+  // Memoised because this runs per sampled point and per text element on the whole document.
+  let ctx = null;
+  const canonCache = new Map();
+  const viaCanvas = (v) => {
+    if (canonCache.has(v)) return canonCache.get(v);
+    let out = null;
+    try {
+      if (!ctx) ctx = document.createElement("canvas").getContext("2d");
+      ctx.fillStyle = "#000000";
+      ctx.fillStyle = v;
+      const a = ctx.fillStyle;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillStyle = v;
+      out = a === ctx.fillStyle ? a : null;
+    } catch (e) {
+      out = null;
+    }
+    if (canonCache.size < 4000) canonCache.set(v, out);
+    return out;
+  };
+  const fromMatch = (m) => {
     let a = m[4] == null ? 1 : parseFloat(m[4]);
     if (/%$/.test(m[4] || "")) a /= 100;
     return { r: +m[1], g: +m[2], b: +m[3], a };
+  };
+  const parse = (v) => {
+    if (!v) return null;
+    const m = RGB.exec(v);
+    if (m) return fromMatch(m);
+    const n = viaCanvas(v);
+    if (!n) return null;
+    const h = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(n);
+    if (h) return { r: parseInt(h[1], 16), g: parseInt(h[2], 16), b: parseInt(h[3], 16), a: 1 };
+    const m2 = RGB.exec(n);
+    return m2 ? fromMatch(m2) : null;
   };
   const hex = (c) => "#" + [c.r, c.g, c.b].map((n) => Math.round(n).toString(16).padStart(2, "0")).join("");
   const lum = (c) => {
