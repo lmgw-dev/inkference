@@ -390,10 +390,20 @@ const LIGHT_SURFACE_PX = 40000;
 // triggers a top-up too — but not on a single stray run, because a site ships low-contrast text
 // of its own and re-probing every load for someone else's grey-on-grey is not worth it.
 const TOPUP_UNREADABLE = 5;
-export function needsTopUp(c) {
+// `unreadableSettled` switches the third trigger off for an origin where a top-up has already
+// been tried and did not reduce the count. THE TRIGGER MUST CONVERGE, and this one stopped
+// converging the moment the census learned to read `lab()`/`oklch()`: it then saw unreadable
+// text it had been blind to, on pages where a re-probe cannot fix it (react.dev 20, dev.to 9,
+// mediamarkt.de 47 — the site's own low-contrast text, and gaps of ours that a per-page sheet
+// does not close). Every navigation therefore pulled our sheet off, re-probed, and rebuilt to
+// the same result: the cache looked broken, each load flashed for the length of a probe, and
+// nothing improved. The other two triggers are unaffected — a light surface that is still there
+// after a top-up is a different matter, and those were measured to converge.
+export function needsTopUp(c, unreadableSettled) {
   if (!c) return false;
   if (Math.max(c.lightFraction || 0, c.docLightFraction || 0) > RELIGHT_FRACTION) return true;
   if (c.lightSurface && c.lightSurface.area > LIGHT_SURFACE_PX) return true;
+  if (unreadableSettled) return false;
   return (c.unreadable || 0) >= TOPUP_UNREADABLE;
 }
 
@@ -420,7 +430,7 @@ async function topUp(tabId, origin, entry) {
   // able to notice. Both census readings count, as everywhere else.
   const c = await census(tabId);
   if (!c) return;
-  if (!needsTopUp(c)) return;
+  if (!needsTopUp(c, entry.unreadableSettled)) return;
   const rec = applied.get(tabId);
   if (!rec || rec.origin !== origin) return;
 
@@ -470,6 +480,18 @@ async function topUp(tabId, origin, entry) {
   if (!still || still.origin !== origin) return; // navigated away; that document is gone anyway
   await applyCss(tabId, fresh.css);
   applied.set(tabId, { ...still, css: fresh.css, toppedUp: true });
+
+  // Did it actually help? Only asked when unreadable text is what brought us here, and only to
+  // decide whether to try again on the NEXT page of this origin. A top-up that leaves the count
+  // where it was will leave it there next time too — the per-page sheet is not what those runs
+  // are missing — so the trigger is retired for the origin rather than re-run on every load.
+  // Retired on the ORIGIN, not the tab: the tab record is rebuilt by the next navigation, which
+  // is exactly the loop this is meant to break. The light-surface and light-fraction triggers
+  // stay live, so a page that really is still light is still picked up.
+  if (!entry.unreadableSettled && (c.unreadable || 0) >= TOPUP_UNREADABLE) {
+    const after = await census(tabId).catch(() => null);
+    if (after && (after.unreadable || 0) >= (c.unreadable || 0)) entry.unreadableSettled = true;
+  }
 }
 
 // A top-up that fails is invisible: it runs detached from the toggle, so a thrown probe left the
