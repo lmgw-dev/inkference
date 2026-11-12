@@ -262,7 +262,89 @@
       const e = { p, var: m[1] };
       const fb = m[2] && canon(m[2].trim());
       if (fb) e.fb = fb;
+      else if (m[2]) {
+        // A fallback that is ITSELF a token — `var(--themed-bg, var(--ds-gray-1000))` — used to
+        // be dropped, leaving only `--themed-bg`. That is the wrong half of the declaration
+        // whenever the outer token is undefined here, which is the entire point of writing it
+        // this way: vercel.com paints its buttons `bg-[var(--themed-bg, var(--ds-gray-1000))]`,
+        // `--themed-bg` is set only inside themed sections, and everywhere else the BUTTON IS
+        // `--ds-gray-1000` — the near-black text colour, used as a surface on purpose (an
+        // inverted button: dark background, light label).
+        // With only `--themed-bg` recorded, the compiler never learned that `--ds-gray-1000`
+        // paints 47 surfaces, lightened it at its definition for its 213 text uses, and every
+        // one of those buttons turned white — label and all — on the dark page.
+        // Recorded as `fbVar` rather than `fb`: there is no literal here, so the compiler has to
+        // resolve it through the token table, and it must stay distinguishable from a fallback
+        // that IS a colour.
+        const inner = /^var\(\s*(--[\w-]+)/.exec(m[2].trim());
+        if (inner) e.fbVar = inner[1];
+      }
       d.push(e);
+    };
+
+    // `rgb(from …)`, `oklch(from …)`, … — a colour defined RELATIVE to another one. Only the
+    // browser can evaluate it, so these are resolved from a computed value (resolveRelative).
+    const RELATIVE_COLOR = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*from\b/i;
+    // The pseudo-elements that can paint a surface of their own. A ::before with a background is
+    // a box the paint census cannot see — it is no element's own background — so if the probe
+    // misses it too, nothing in the pipeline knows it is there.
+    const PSEUDO = /(::?(?:before|after|backdrop|marker|placeholder|selection|first-line|first-letter))\s*$/i;
+    // Reads what the BROWSER computed for declarations the probe could not evaluate statically,
+    // off the first element the rule actually matches. Bounded on purpose: one querySelector per
+    // affected rule, and only for rules that have such a declaration — 30 on vercel.com, none at
+    // all on a page that ships no relative colours.
+    const resolveRelative = (sel, d) => {
+      const need = d.relative;
+      // A DARKEN-type blend is read here too, for the same reason the colour is: only the
+      // computed style knows it. It matters on exactly the surfaces this function already has in
+      // hand — a ::before painting a pill or a chip — and it is the amazon.de lesson applied one
+      // level up: `mix-blend-mode: multiply` assumes the light backdrop we just took away, so
+      // whatever colour we write is multiplied into the dark page and vanishes. vercel.com's
+      // "New" pills carry `before:mix-blend-multiply` (with `dark-theme:before:mix-blend-screen`
+      // for the site's OWN dark mode, which our sheet does not switch on), so they measured a
+      // perfect #e6e6e6 on #1c1c1e in the DOM — 13:1 — and were invisible on screen. Nothing in
+      // the pipeline could catch that: the census grades colours, and these are pixels.
+      // Only pseudo-element rules are tested, which keeps this to one lookup for a handful of
+      // rules — 5 such pseudo-elements on vercel.com out of 1191 elements.
+      const pseudoSel = PSEUDO.test(String(sel).split(",")[0].trim());
+      // `need` is checked as well as `d`: on exactly the rules this matters for, the background
+      // is a relative colour and so is still sitting in `need`, not yet in `d` — testing only
+      // `d` found a blend on none of them.
+      const wantsBg = (e) => e.p === "background-color";
+      const wantBlend = pseudoSel && (d.some(wantsBg) || (need || []).some(wantsBg));
+      if ((!need || !need.length) && !wantBlend) return 0;
+      delete d.relative;
+      for (const part of String(sel).split(",")) {
+        const t = part.trim();
+        if (!t) continue;
+        const m = PSEUDO.exec(t);
+        const base = (m ? t.slice(0, m.index) : t).trim();
+        let el = null;
+        try {
+          el = base ? document.querySelector(base) : null;
+        } catch (_) {
+          continue; // a selector querySelector cannot parse (`:is(:where(…))` oddities)
+        }
+        if (!el) continue;
+        let cs;
+        try {
+          cs = getComputedStyle(el, m ? m[1] : null);
+        } catch (_) {
+          continue;
+        }
+        for (const n of need || []) {
+          if (d.some((e) => e.p === n.p)) continue;
+          const c = canon(cs.getPropertyValue(n.p));
+          if (!c) continue;
+          tallyColor(n.role, c);
+          d.push({ p: n.p, v: c });
+        }
+        // Returned rather than hung on `d`: the declaration list crosses into the background
+        // page as JSON, and an array's extra properties do not survive that.
+        const mode = cs.mixBlendMode;
+        return wantBlend && (mode === "multiply" || mode === "darken") ? 1 : 0;
+      }
+      return 0;
     };
 
     const visit = (style) => {
@@ -330,6 +412,24 @@
         if (av) {
           tallyColor(role, av.c);
           d.push({ p, v: av.c, alpha: av.alpha });
+          continue;
+        }
+        // RELATIVE colour syntax — `oklch(from var(--ds-gray-200) 0.94 c h)` — is a colour
+        // DERIVED from a token, and treating it as a consumer of that token is wrong in the one
+        // way that matters: the token is the base, not the value. vercel.com builds its "New"
+        // pills that way (`before:bg-[oklch(from var(--ds-gray-200) 0.94 c h)]`), and
+        // `--ds-gray-200` is a mid grey while the derived colour computes to oklch(0.94 …) —
+        // all but white. Recorded as a consumer, the pill was handed the token's own treatment
+        // and stayed light, while the label inside it (`text-(--ds-gray-1000)`) was correctly
+        // lifted: light text on a light pill, and the census never saw it because the pill is a
+        // ::before, which is no element's own background and so is not hit-tested.
+        // Nothing in the value can be read statically — `from` means "ask the browser" — so it
+        // is left for `resolveRelative` below, which reads the COMPUTED value off a matching
+        // element. Marked rather than dropped, so a value that resolves to nothing is still
+        // accounted for.
+        if (RELATIVE_COLOR.test(raw)) {
+          d.relative = d.relative || [];
+          d.relative.push({ p, role });
           continue;
         }
         if (/var\(/.test(raw)) {
@@ -433,6 +533,7 @@
         if (rule.selectorText != null && rule.style) {
           const sel = rule.selectorText;
           const d = visit(rule.style);
+          const blend = resolveRelative(sel, d);
           noteHook(sel, d.filter((x) => x.p.startsWith("--")).length);
           if (inDark) {
             result.counts.prefersDarkRules++;
@@ -443,7 +544,7 @@
             }
             if (all.length) darkMedia.push({ sel, wrap, d: all });
           } else if (d.length) {
-            paint.push({ sel, wrap, d });
+            paint.push(blend ? { sel, wrap, d, blend } : { sel, wrap, d });
           }
           if (rule.cssRules && rule.cssRules.length) walk(rule.cssRules, wrap.concat(sel), inDark); // CSS nesting
         } else if (rule.styleSheet) {

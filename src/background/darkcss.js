@@ -123,8 +123,39 @@ const chroma = ({ r, g, b }) => (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
 // Each mapper returns null when the colour needs no change (already dark background,
 // already light text), so the compiler can skip the declaration.
 
-function mapBg(c, theme) {
+// Below this, a translucent fill is a TINT over whatever is behind it (a hover wash, a pressed
+// state); at or above it, it is a cover with an intent of its own (a modal scrim, a legibility
+// gradient over a photo) and must keep darkening.
+const OVERLAY_ALPHA = 0.25;
+function mapBg(c, theme, interactive) {
   const { h, s, l } = rgbToHsl(c);
+  // A translucent wash is defined by what it DOES, not by what colour it is, and on a dark page
+  // "darken slightly" does nothing a reader can see. `rgba(35,39,47,.05)` over white is the
+  // standard hover tint; over #121212 it is invisible, and because the colour is already dark
+  // the branch below returned null, so the site's own rule stayed and the hover state was gone.
+  // Measured on react.dev: of 36 :hover rules carrying a colour, the ones left untouched are
+  // washes of exactly this shape (`.hover\:bg-primary\/5`, `rgba(0,0,0,.2)` on the search hits).
+  // Mapped to a light wash of the same alpha it does on a dark page what it did on a light one.
+  // Note this only matters because our sheet is injected `cssOrigin:"user"`: there our base rule
+  // beats the site's :hover rule outright, so a hover we fail to translate is not merely untouched
+  // — it is suppressed. (dark-check injects a plain <style>, i.e. author origin, which is why this
+  // class of damage does not show up in its numbers at all.)
+  // Chromatic washes keep their hue and are lifted instead: a blue selection tint is still blue.
+  // ONLY in an interaction rule (:hover/:focus/:active/…), and that restriction is not caution,
+  // it is the premise: flipping a wash to light assumes the surface under it is now dark, and
+  // that holds for a hover state on a surface we recoloured, not for a wash baked into a surface
+  // we left alone. Measured on github.com when this applied everywhere: its logged-out marketing
+  // header, a white bar our sheet already misses, went from 5% to 12% light and gained 9 runs of
+  // #e6e6e6 on #ffffff — we had lightened the wash sitting on white. A static wash needs no
+  // special case anyway: whatever it sits on is mapped on its own terms.
+  // No lightness test: ANY wash this faint is a state signal, and on a dark page it can only be
+  // seen if it lightens. A first version required `l < 0.5` and missed react.dev's outlined
+  // buttons, whose wash is `rgba(120,131,155,.05)` — mid grey-blue at l≈0.54, just over the line.
+  // It fell through to the bands below, became `raised` at 5% alpha, and was invisible. A wash
+  // that is ALREADY light stays light by this rule too, which is what it should do.
+  if (interactive && c.a != null && c.a < OVERLAY_ALPHA) {
+    return chroma(c) > 0.12 ? hsl(h, Math.min(s, 0.6), 0.7, c.a) : `rgba(255,255,255,${c.a})`;
+  }
   if (l < 0.5) return null; // already dark — a maroon header, a black footer: keep
   if (chroma(c) > 0.12) return hsl(h, Math.min(s, 0.45), 0.17, c.a); // a tinted light (a notice, an info box): keep the hue, go dark
   const tone = l >= 0.97 ? theme.base : l >= 0.9 ? theme.surface : theme.raised; // white → base; #f5f5f5/#ebebeb → surface; #e0e0e0 → raised
@@ -194,7 +225,15 @@ export function inferTokenRole(name, used, value) {
   // as such turned the site's main background token into "mixed" and dropped its root pin.
   const own = all.direct;
   const ownTotal = own ? (own.bg || 0) + (own.text || 0) + (own.border || 0) : 0;
-  const allTotal = (all.bg || 0) + (all.text || 0) + (all.border || 0);
+  // The loan is weighed in its SPLIT form (`scaled`, from propagateRoles), because a slot filled
+  // by 30 different sources lends the same count to each and so inflates the evidence 30-fold.
+  // Without this, Tailwind's palette lost to `--tw-gradient-from`: 21 own uses against 217
+  // borrowed is under the 25% the guard needs, so `--color-pink-500` — a text colour by its own
+  // consumers — was classified `bg` and darkened at its definition. Only the THRESHOLD uses the
+  // split count; `u` itself stays the plain one, so a token with no evidence of its own is
+  // decided exactly as before.
+  const lent = all.scaled || all;
+  const allTotal = (lent.bg || 0) + (lent.text || 0) + (lent.border || 0);
   const u = ownTotal > 0 && ownTotal >= allTotal * DIRECT_ROLE_SHARE ? own : all;
   const total = (u.bg || 0) + (u.text || 0) + (u.border || 0);
   const top = ["bg", "text", "border"].sort((a, b) => (u[b] || 0) - (u[a] || 0))[0];
@@ -211,6 +250,22 @@ export function inferTokenRole(name, used, value) {
     // by its own use, so the borders stay borders and the text becomes text.
     const rival = top === "bg" ? u.text || 0 : top === "text" ? u.bg || 0 : u.text || 0;
     if (rival / total > 1 - MIXED_ROLE_SHARE) return "mixed";
+    // A `bg` token that `mapBg` would leave ALONE cannot help its text consumers, and the share
+    // test above does not catch it, because the question is not how the evidence splits — it is
+    // that one side of the split gets no treatment at all. `mapBg` returns null for an already
+    // dark colour (a maroon header, a black footer: keep), so such a token is rewritten NOWHERE,
+    // not at its definition and not at its consumers, while the page around it becomes dark.
+    // Every text use it has is then dark-on-dark by construction. Measured on tailwindcss.com:
+    // `--color-gray-950` is #030712 with bg 45, text 12, border 16 — a text share of 16%, just
+    // under the 20% that tips a token to `mixed` — and it paints the h1, so "Rapidly build
+    // modern websites" stood at #030712 on #121212, a contrast of 1.04:1.
+    // `mixed` is the safe answer and costs nothing here: the definition stays untouched, which
+    // is what `bg` did anyway, and each consumer is rewritten by its own use — background
+    // consumers still map to null and keep their colour, text consumers get lifted.
+    if (top === "bg" && (u.text || 0) > 0) {
+      const c = parseColor(value);
+      if (c && rgbToHsl(c).l < 0.5) return "mixed";
+    }
     return top;
   }
   if (/bg|background|surface|panel|card|paper|canvas|fill|elevation|layer/i.test(name)) return "bg";
@@ -230,6 +285,12 @@ export function propagateRoles(tokens, chains) {
   // `direct` keeps the token's OWN consumer counts, untouched by what the loop below adds, so
   // `inferTokenRole` can tell evidence from a loan. Without it a derived token's uses are
   // indistinguishable from the parent's and can outvote them — see inferTokenRole.
+  // `scaled` is deliberately NOT seeded with the token's own counts, so it holds the LOANS alone
+  // (in split form). The threshold in inferTokenRole then asks "is my own evidence a real share
+  // of what I was LENT", not "…of everything I have", and that is the question the guard exists
+  // for. Seeding it with `own` — which reads more natural, and which I tried — measured worse on
+  // every page that moves: mediamarkt.de 61 → 194 unreadable, cloudflare.com 1 → 10. Left as it
+  // is on the measurement, not on the prose.
   for (const t of tokens || []) {
     const own = { ...(t.used || { bg: 0, text: 0, border: 0 }) };
     used.set(t.name, { ...own, direct: own });
@@ -240,17 +301,59 @@ export function propagateRoles(tokens, chains) {
     for (const [from, refs] of edges) {
       const u = used.get(from);
       if (!u) continue;
+      // A token built from MANY sources is a SLOT, not a derivative, and its uses are evidence
+      // about NONE of them in particular. So a second, SPLIT count is kept beside the plain one
+      // — `scaled` — and `inferTokenRole` uses it for exactly one question: may this loan
+      // outvote the token's OWN consumers? Lending the full count multiplies the evidence: Tailwind writes
+      // `.from-pink-500 { --tw-gradient-from: var(--color-pink-500) }`, so one slot is filled by
+      // 19–30 different palette colours, and `--tw-gradient-from`'s 66 background uses became
+      // 66 votes for EVERY one of them. Measured on tailwindcss.com: `--color-pink-500` has its
+      // own {bg:6, text:10, border:5} — a text colour — and came out of propagation at bg:202,
+      // from `--tw-gradient-from` (66), `--tw-gradient-to` (66) and `--tw-ring-color` (63).
+      // Role `bg`, so `mapBg` darkened it at its definition, and `.text-pink-500` became #3f182c
+      // on #121212. 80 of 110 text runs unreadable at a census-perfect 0% light — the same
+      // signature as the IMDb bug, and `DIRECT_ROLE_SHARE` could not catch it, because 21 own
+      // uses against 217 borrowed is under the 25% the guard needs. Splitting restores it: the
+      // loan drops to ~6, the token's own consumers win, and text vs bg makes it `mixed` — the
+      // right answer for a palette entry, which genuinely is both.
+      // The split is kept SEPARATE rather than applied to the counts themselves, and that is not
+      // tidiness — splitting the real counts changes answers it has no business changing. Most
+      // tokens on a big design system have NO consumers of their own and are classified purely by
+      // what they are lent; for those the loan is not a rival to weigh, it is the only evidence
+      // there is. Dividing it rescales each source by how many SIBLINGS it happens to have, so a
+      // bg loan arriving through a 2-source chain beats a border loan through a 20-source one for
+      // no reason that has anything to do with the page. Measured on mediamarkt.de: splitting the
+      // counts flipped 86 token roles, 41 of them `bg`→`border`, nearly all on tokens whose own
+      // use was {0,0,0} — and unreadable text went 32 → 180 of 353 while the page went 16% → 0%
+      // light. More surfaces darkened, their text not carried along: the IMDb signature again,
+      // caused by the repair for it.
+      // Against the token's own evidence the split is exactly right, and there it costs nothing:
+      // `light-dark(var(--gray-90), var(--gray-10))` divides both branches by the same 2, and a
+      // real derivative with a single source (IMDb's focus ring) divides by 1.
+      const share = refs.length || 1;
       for (const ref of refs) {
         let r = used.get(ref);
         if (!r) {
-          r = { bg: 0, text: 0, border: 0 };
+          r = { bg: 0, text: 0, border: 0, scaled: { bg: 0, text: 0, border: 0 } };
           used.set(ref, r);
         }
+        if (!r.scaled) r.scaled = { bg: 0, text: 0, border: 0 };
         for (const k of ["bg", "text", "border"]) {
           const add = (u[k] || 0) - (r["_" + from + k] || 0); // only the increment since last pass
           if (add > 0) {
             r[k] = (r[k] || 0) + add;
             r["_" + from + k] = u[k];
+            changed = true;
+          }
+          // The SPLIT count, kept alongside and used for one question only — see below. It is
+          // fed from the source's own split count, so a division compounds down a chain.
+          const lent = ((u.scaled ? u.scaled[k] : u[k]) || 0) / share;
+          const addS = lent - (r["_s" + from + k] || 0);
+          // Fractions, so the increment is compared against an epsilon rather than 0: a
+          // vanishing remainder must not keep the loop reporting `changed`.
+          if (addS > 1e-6) {
+            r.scaled[k] = (r.scaled[k] || 0) + addS;
+            r["_s" + from + k] = lent;
             changed = true;
           }
         }
@@ -276,13 +379,13 @@ function paletteFor(role, key, palette) {
   return to;
 }
 
-function mapByRole(role, value, theme, palette) {
+function mapByRole(role, value, theme, palette, interactive) {
   const c = parseColor(value);
   if (!c) return null;
   const key = formatColor({ ...c, a: 1 });
   const pinned = paletteFor(role, key, palette);
   if (pinned) return withAlpha(pinned, c.a);
-  if (role === "bg") return mapBg(c, theme);
+  if (role === "bg") return mapBg(c, theme, interactive);
   if (role === "text") return mapText(c, theme);
   if (role === "border") return mapBorder(c, theme);
   return null;
@@ -445,6 +548,10 @@ export function compileSheet(probe, census, plan) {
     const tokenRole = new Map(); // name -> bg | text | border | mixed | ?
     const tokenValue = new Map(); // name -> what a consumer resolves to right now
     const inPlace = new Set(); // tokens whose consumers must be rewritten where they are used
+    const rootDefined = new Set(); // tokens actually in force on the root (see below)
+    // Tokens the probe found NO definition for, while the browser reports a value on the root:
+    // pinned there in addition to being rewritten at their consumers (see below).
+    const pinUndefined = new Set();
     const used = propagateRoles(probe.tokens, probe.chains);
     for (const t of probe.tokens || []) {
       const role = inferTokenRole(t.name, used.get(t.name), t.computed || t.values[0]);
@@ -453,9 +560,36 @@ export function compileSheet(probe, census, plan) {
       // inside sections has none there, so fall back to its first definition.
       const value = t.computed || t.values[0];
       if (value) tokenValue.set(t.name, value);
+      // IN FORCE AT THE ROOT is a different question from "defined somewhere", and a var()
+      // fallback turns on exactly that difference: `var(--themed-bg, …)` takes the fallback
+      // everywhere the token is not in scope. `tokenValue` cannot answer it — it falls back to
+      // the first definition — so the distinction is kept separately.
+      if (t.computed) rootDefined.add(t.name);
       // Mixed-role tokens cannot be recoloured at their definition; chain tokens
       // (`--body-bg: var(--white)`) have no literal definition to recolour at all.
+      // "No literal value" is two different situations, and lumping them together cost a whole
+      // class of pages. A CHAIN has definitions, just none with a literal in them (defs > 0) —
+      // its consumers are rewritten in place and the tokens it is built from carry the colour.
+      // A token with defs === 0 has no definition the probe could find AT ALL, while the browser
+      // reports a value for it on the root: vercel.com's `--ds-background-100` reads #ffffff
+      // computed, is `bg` by 83 background uses, and has defs 0 — its definition lives somewhere
+      // the stylesheet walk never reaches. Treated as a chain it was held back from the root
+      // pins, and since there are no definitions to rewrite either, it was recoloured NOWHERE.
+      // That is why vercel.com's header buttons stayed white on the dark page: they set
+      // `--themed-bg: var(--ds-background-100)` through a utility class, so the white arrived
+      // through a token the compiler had quietly excluded from every path it has.
+      // For that token the root pin is not one option among several — it is the only one, and it
+      // is safe: a section that re-points the token still wins there by proximity (a root
+      // declaration cannot override a nearer one, importance or not).
       if (role === "mixed" || !t.values.length) inPlace.add(t.name);
+      // …and such a token is ALSO pinned at the root, which is not a contradiction: the two
+      // reach different elements. The consumer rules carry every use the probe actually saw,
+      // including those inside a section that re-points the token; the pin carries everything it
+      // did not see. Choosing between them is what broke github.com — moving these tokens from
+      // `inPlace` to the pins alone dropped their consumer rules and left the page 87% light
+      // with 70 unreadable runs, because its header re-points tokens per section and a root pin
+      // cannot reach past a nearer declaration. Doing both costs one declaration per token.
+      if (role !== "mixed" && !t.values.length && !t.defs && t.computed) pinUndefined.add(t.name);
     }
     const isLight = (c) => {
       const p = parseColor(c);
@@ -463,6 +597,12 @@ export function compileSheet(probe, census, plan) {
     };
     for (const r of probe.paint || []) {
       const decls = [];
+      // An interaction rule: its colours describe a STATE, not the surface itself. Only there is
+      // a translucent wash flipped (see mapBg) — `:hover` and friends, plus the attribute form
+      // frameworks emit (`[data-state=hover]`, `[aria-selected=true]`).
+      const interactive = /:(hover|focus|focus-visible|focus-within|active|checked|target)\b|\[(data-[\w-]*(state|hover|active|selected|pressed)|aria-(selected|pressed|current))/i.test(
+        String(r.sel || "")
+      );
       const imgSel = imageSubject(r.sel);
       for (const d of r.d) {
         // A background on an IMAGE is the picture's backdrop, not a surface of the page: a
@@ -478,15 +618,71 @@ export function compileSheet(probe, census, plan) {
           // A consumer of a token. Single-role tokens are rewritten at their definition and the
           // consumer follows; a mixed token is resolved here and mapped by THIS use's role.
           const role = { color: "text", "text-decoration-color": "text", "caret-color": "text", "background-color": "bg" }[d.p] || "border";
-          if (inPlace.has(d.var) && tokenValue.has(d.var)) {
-            mapped = mapByRole(role, tokenValue.get(d.var), theme, palette);
+          // The fallback is tested FIRST, because which of the two paints is not a preference —
+          // it is settled by whether the outer token is in force here at all. `--themed-bg` is
+          // set only inside themed sections, so on the rest of the page `var(--themed-bg,
+          // var(--ds-gray-1000))` IS `--ds-gray-1000`, and reasoning about `--themed-bg` there
+          // describes a value no element has. Ordering this after the inPlace branch hid the
+          // whole case on vercel.com: `--themed-bg` is `mixed` (bg 2, text 1), so that branch
+          // claimed the declaration, `mapBg` answered null for its orange, and the button was
+          // left exactly as the site shipped it — white on a dark page, together with "Log In"
+          // and every other button written this way.
+          // The fallback is tested FIRST, because which of the two paints is not a preference —
+          // it is settled by whether the outer token is in force here at all. `--themed-bg` is
+          // set only inside themed sections, so on the rest of the page `var(--themed-bg,
+          // var(--ds-gray-1000))` IS `--ds-gray-1000`, and reasoning about `--themed-bg` there
+          // describes a value no element has. Ordering this after the inPlace branch hid the
+          // whole case on vercel.com: `--themed-bg` is `mixed` (bg 2, text 1), so that branch
+          // claimed the declaration, `mapBg` answered null for its orange, and the button was
+          // left exactly as the site shipped it — white on a dark page, together with "Log In"
+          // and every other button written this way.
+          if (d.fbVar && !rootDefined.has(d.var) && tokenValue.has(d.fbVar)) {
+            // The INNER token is what paints, so it is mapped by THIS use rather than left to
+            // its own definition — which is the whole point here: `--ds-gray-1000` is a text
+            // colour by its 213 text uses, and this use is a background (an inverted button:
+            // dark surface, light label).
+            // `|| the colour itself`: mapByRole answers null for "already right for this role",
+            // and here that must still be WRITTEN. The normal meaning of null — leave the
+            // declaration alone — hands the element back to the token's definition, and that
+            // definition is what is wrong for this use. Saying nothing here means saying "white".
+            const base = tokenValue.get(d.fbVar);
+            const inner = mapByRole(role, base, theme, palette, interactive) || base;
+            // Written back as a var() with the SAME outer token, not as a flat colour, so the
+            // cascade keeps deciding exactly as the site wrote it: a themed section that does set
+            // `--themed-bg` still wins there (and that definition is recoloured on its own
+            // terms), while everywhere else — where the fallback paints — our colour applies.
+            if (inner) {
+              mapped = `var(${d.var}, ${inner})`;
+              stats.consumers++;
+            }
+          } else if (inPlace.has(d.var) && tokenValue.has(d.var)) {
+            mapped = mapByRole(role, tokenValue.get(d.var), theme, palette, interactive);
+            if (mapped) stats.consumers++;
+          } else if (
+            tokenValue.has(d.var) &&
+            ((tokenRole.get(d.var) === "text" && role === "bg") ||
+              (tokenRole.get(d.var) === "bg" && role === "text"))
+          ) {
+            // The token is rewritten at its definition, but THIS use is the opposite of the role
+            // it was rewritten for, so the definition's new value is exactly backwards here: a
+            // text token is lightened, and a surface painted with it turns light on a dark page.
+            // Design systems do this deliberately — an "inverted" button paints its background
+            // from the text colour and its label from the page background.
+            // `mixed` would be the wrong tool even though the shape looks the same: a bg share
+            // under the tipping threshold would have to be chased by lowering it, which hands
+            // hundreds of text consumers from one definition to one rule each — robust only as
+            // far as the probe saw every one of them. Rewriting just the contrary uses keeps the
+            // definition doing the heavy work and costs one rule per inversion.
+            // Only bg↔text counts. A border drawn in the text colour is the asymmetry
+            // `inferTokenRole` already handles, and routing it here would undo that.
+            mapped = mapByRole(role, tokenValue.get(d.var), theme, palette, interactive);
             if (mapped) stats.consumers++;
           } else if (d.fb && !tokenValue.has(d.var)) {
             // `var(--token, #fff)` where the token is defined NOWHERE: the fallback literal is
             // what actually paints, and nothing else will ever recolour it — the definition we
             // would have rewritten does not exist. Guarded on the token being unknown to the
             // probe, so a token that IS defined keeps winning through its own definition.
-            mapped = mapByRole(role, d.fb, theme, palette);
+            mapped = mapByRole(role, d.fb, theme, palette, interactive);
             if (mapped) stats.consumers++;
           }
         } else if (d.colors) {
@@ -502,7 +698,7 @@ export function compileSheet(probe, census, plan) {
           let v = d.v;
           let changed = false;
           for (const x of d.colors || []) {
-            const m = mapByRole(partRole, x.c, theme, palette);
+            const m = mapByRole(partRole, x.c, theme, palette, interactive);
             if (!m) continue;
             // `%23rrggbb` inside a data URI: put the replacement back in the same spelling, and
             // leave the colour alone if the mapping is not a hex one that can be written that way.
@@ -514,19 +710,47 @@ export function compileSheet(probe, census, plan) {
           mapped = changed ? v : null;
         } else if (d.p.startsWith("--")) {
           const role = tokenRole.get(d.p) || "?";
-          mapped = role === "?" || inPlace.has(d.p) ? null : mapByRole(role, d.v, theme, palette);
+          mapped = role === "?" || inPlace.has(d.p) ? null : mapByRole(role, d.v, theme, palette, interactive);
           if (mapped) stats.tokens++;
         } else {
           const role = { color: "text", "text-decoration-color": "text", "caret-color": "text", "background-color": "bg" }[d.p] || "border";
-          mapped = mapByRole(role, d.v, theme, palette);
+          mapped = mapByRole(role, d.v, theme, palette, interactive);
         }
         // One place for every branch above, so a token DEFINITION written this way
         // (`--surface: rgb(255 255 255/var(--op,1))`) is restored the same as a plain declaration.
+        // In an INTERACTION rule, "no change needed" is not the same as "write nothing". Our
+        // sheet is injected `cssOrigin:"user"`, so a base rule of ours beats the site's :hover
+        // rule outright — and then a hover we decline to rewrite is not left alone, it is
+        // SUPPRESSED, and the state silently stops existing for the reader.
+        // Measured on chefkoch.de, whose buttons change only their LABEL colour on hover:
+        // `.ds-btn--tertiary:hover{color:#6ca075}` is a mid green at l≈0.53, so `mapText`
+        // answered null ("already light") and we emitted nothing — our base `color` won, and
+        // hovering did nothing at all. Writing the colour back unchanged costs one declaration
+        // and restores the state exactly as the site designed it; where the colour DOES need
+        // mapping, the mapping above has already happened and this never fires.
+        if (!mapped && interactive && d.v && !d.p.startsWith("--")) mapped = d.v;
         if (mapped && d.alpha) mapped = withAlphaVar(mapped, d.alpha);
         if (mapped) decls.push(`${d.p}:${mapped} !important`);
         else stats.skipped++;
       }
       if (!decls.length) continue;
+      // A multiply/darken blend assumes the light surface we just took away — the same reason it
+      // is reset on image backdrops below, one level up: here it is a ::before painting a pill or
+      // a chip. Only emitted when this rule actually got a new background, so a blend the site
+      // uses over something we left alone is not touched.
+      // SCREEN, not `normal`, and the difference is the whole fix. Such a ::before is almost
+      // always `position:absolute; inset:0`, which puts it ABOVE the element's own text in paint
+      // order; it stays legible only because multiply lets what is underneath show through.
+      // Setting `normal` makes it opaque and it covers the label — measured on vercel.com's
+      // "New" pills: the pill became visible and the word inside it disappeared. Screen is
+      // multiply's dual (it lightens where multiply darkens), so it does on a dark backdrop what
+      // the site's blend does on a light one — which is exactly the swap vercel.com itself makes
+      // for its own dark mode (`dark-theme:before:mix-blend-screen`). It also suits the colour we
+      // just wrote: our mapping turned the pill's near-white into a dark tone, and screening a
+      // dark tone over a dark page lifts it to the quiet chip the design asks for.
+      if (r.blend && decls.some((x) => x.startsWith("background-color:"))) {
+        decls.push("mix-blend-mode:screen !important");
+      }
       out.push(emit(r.wrap || [], r.sel, decls));
       stats.rules++;
       stats.decls += decls.length;
@@ -557,7 +781,10 @@ export function compileSheet(probe, census, plan) {
     // #24292f.
     const rootDecls = [];
     for (const t of probe.tokens || []) {
-      if (inPlace.has(t.name)) continue;
+      // `pinUndefined` is the one kind of inPlace token that is pinned as well — it has no
+      // definition anywhere the probe could reach, so its consumer rules cover only the uses
+      // that were seen, and without a pin everything else keeps the site's light value.
+      if (inPlace.has(t.name) && !pinUndefined.has(t.name)) continue;
       const role = tokenRole.get(t.name) || "?";
       if (role === "?") continue;
       const value = t.computed || (t.values || [])[0];
