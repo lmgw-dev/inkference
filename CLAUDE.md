@@ -313,6 +313,17 @@ sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → 
      Equally, `scaled` is NOT seeded with the token's own counts, unintuitive as that reads: the
      question is "is my own evidence a real share of what I was LENT", and seeding it measured worse
      on every page that moves (mediamarkt 61 → 194, cloudflare 1 → 10).
+   - **"Light enough to leave alone" is a question about CONTRAST, and HSL lightness answers a
+     different one.** `mapText` returned null for anything at `l >= 0.5`, but a saturated mid
+     colour clears that and is still far too dark to read on #121212: react.dev's syntax
+     highlighting is `#6f42c1` at l = 0.508, left untouched, 2.5:1 — 20 runs the census reported
+     as unreadable while the compiler believed it was done. The census grades by WCAG contrast and
+     counts under 3:1, so that is the number the mapping answers to now (`TEXT_MIN_CONTRAST`,
+     against the theme's own base). Anything already clearing the bar is still left exactly as it
+     is. react.dev 20 → 0, dev.to 8 → 0, nothing else on twelve pages moved.
+     This is the third time a lightness threshold turned out to be the wrong question — see the
+     interaction washes below and the `bg`-token entry above. **When a rule decides whether a
+     colour is "already fine", check it against what the measure will ask.**
    - **A `bg` token that `mapBg` would leave alone cannot help its text consumers.** `mapBg` returns
      null for an already-dark colour, so such a token is rewritten NOWHERE — not at its definition,
      not at its consumers — while the page around it goes dark, and every text use it has is
@@ -460,6 +471,16 @@ sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → 
      visible and the word inside it disappeared. SCREEN is multiply's dual (it lightens where
      multiply darkens), it suits the dark colour our mapping just wrote, and it is exactly the swap
      the site itself makes for its own dark mode (`dark-theme:before:mix-blend-screen`).
+     **KNOWN LIMIT, measured: a token the site re-points PER SECTION cannot be fixed from the
+     root.** mediamarkt.de paints its cards `color: var(--mms-ui-colors-color-palette-text-subtle)`
+     — a Panda/Chakra-style palette token redefined inside each section — and the compiler only
+     ever sees the root value. 150 of its tokens are pinned onto surface tones, so wherever a
+     section points that one at such a grey the text inherits a SURFACE colour: 20 runs of #26262a
+     on #141414, 11 of #1c1c1e on #1f1f1f, and ~35 unreadable that no amount of role-fixing
+     reaches. Same shape as GitHub's dark header (noted above). Closing it means resolving tokens
+     per section, which is its own piece of work — not a tweak to the role rules. Attempting it as
+     one (defending the contrary use at its consumer) changed nothing on any of twelve pages and
+     was reverted.
      Both failures look identical to `getComputedStyle`, so **verify a blend at the PIXEL**: read
      the darkest and lightest pixel inside the element's own rect and take the ratio. And take the
      rect AFTER scrolling has settled — reading it before cost a round, measuring an empty patch of

@@ -162,9 +162,23 @@ function mapBg(c, theme, interactive) {
   return withAlpha(tone, c.a);
 }
 
+// "Light enough to leave alone" is a question about CONTRAST against the page we are building,
+// and HSL lightness is a poor stand-in for it. A saturated mid colour clears l >= 0.5 while
+// being far too dark to read on #121212: react.dev's syntax highlighting is #6f42c1 at l = 0.508,
+// so it was left untouched and came out at 2.5:1 — 20 runs the census duly reported as
+// unreadable while the compiler thought it had done its job. The census grades by WCAG contrast
+// and counts under 3:1, so that is the test the mapping has to answer to, with the theme's own
+// base as the surface. Anything that already clears the bar is still left exactly as it is.
+const TEXT_MIN_CONTRAST = 3;
+function contrastOn(c, bg) {
+  const b = parseColor(bg);
+  if (!b) return Infinity; // unknown surface: do not second-guess the colour
+  const [hi, lo] = [luminance(c), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
 function mapText(c, theme) {
   const { h, s, l } = rgbToHsl(c);
-  if (l >= 0.5) return null; // already light
+  if (l >= 0.5 && contrastOn(c, theme.base) >= TEXT_MIN_CONTRAST) return null; // already readable
   if (chroma(c) > 0.15) return hsl(h, Math.min(s, 0.8), 0.72, c.a); // chromatic (links, brand copy): keep hue, lift
   return withAlpha(l <= 0.3 ? theme.text : theme.muted, c.a);
 }
