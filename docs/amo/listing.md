@@ -34,19 +34,29 @@ people install, lmgw is why they stay.
 
 ## Categories
 
-**Appearance** and **Other**.
+**Appearance**, and nothing else. Up to 3 are allowed, but there is no "Other" in the list — the
+options are Alerts & Updates, Appearance, Bookmarks, Download Management, Feeds/News/Blogging,
+Games & Entertainment, Language Support, Photos/Music/Videos, Privacy & Security, Search Tools,
+Shopping, Social & Communication, Tabs, Web Development, plus a "doesn't fit any of these" box.
+None of the rest describes this add-on without stretching, and a stretched category is a thing
+reviewers and users can hold against the listing, so one accurate beats two padded.
 
-Not `language-support`, which is what the live listing currently carries — it describes nothing
-this add-on does and wastes one of the two slots.
+Removed: `language-support`, which the listing carried and which describes nothing it does.
 
 ## Tags
 
 ```
-dark mode, dark theme, night mode, darkmode, contrast, accessibility, ai, local ai
+chat, dark mode, privacy, translate
 ```
 
-Terms people actually type. `night mode` and `darkmode` are common spellings of the same intent;
-`contrast` and `accessibility` match what the readability grading genuinely does.
+**Tags are a FIXED LIST of checkboxes, not free text** (max 10 of ~39). An earlier version of this
+file listed `dark theme, night mode, darkmode, contrast, accessibility, ai, local ai` — of those
+only `dark mode` exists. There is no tag for AI, contrast or accessibility at all.
+
+The four chosen are the ones that name something the add-on actually does: `dark mode`, `chat`
+(the sidebar is one), `translate` (a context-menu action), `privacy` (no account, no telemetry,
+data goes only to the gateway you run). The rest of the list is products and verticals — youtube,
+roblox, torrent, password manager, vpn — none of which apply.
 
 ## Homepage / support
 

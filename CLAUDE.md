@@ -296,6 +296,48 @@ sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → 
      proves the guard is doing work rather than passing by luck. Note the fixture needs ONE RULE PER
      CONSUMER: the probe counts declarations, not matched elements, so `.a1,.a2,.a3 {color:var(--x)}`
      is a single text use and a first attempt measured nothing.
+   - **A SLOT IS NOT A DERIVATIVE, and lending its roles in full multiplies the evidence.** Tailwind
+     writes `.from-pink-500 { --tw-gradient-from: var(--color-pink-500) }`, so ONE slot is filled by
+     19–30 different palette colours and its 66 background uses became 66 votes for every one of
+     them. `--color-pink-500` has its own {bg:6, text:10, border:5} — a text colour — and came out of
+     propagation at **bg:202**, so it was darkened at its definition and `.text-pink-500` became
+     #3f182c on #121212: 80 of 110 text runs unreadable at a census-perfect 0% light. The
+     `DIRECT_ROLE_SHARE` guard could not catch it, because 21 own uses against 217 borrowed is under
+     the 25% it needs. So the loan is weighed in SPLIT form (`scaled`) for that threshold ONLY.
+     **Do not split the counts themselves** — I tried, and it rescales each source by how many
+     siblings it happens to have: on mediamarkt.de it flipped 86 roles, 41 of them bg→border, nearly
+     all on tokens whose own use was {0,0,0}, taking unreadable text from 32 to 180. For a token with
+     no evidence of its own the loan is not a rival to weigh, it is the only evidence there is.
+     Equally, `scaled` is NOT seeded with the token's own counts, unintuitive as that reads: the
+     question is "is my own evidence a real share of what I was LENT", and seeding it measured worse
+     on every page that moves (mediamarkt 61 → 194, cloudflare 1 → 10).
+   - **A `bg` token that `mapBg` would leave alone cannot help its text consumers.** `mapBg` returns
+     null for an already-dark colour, so such a token is rewritten NOWHERE — not at its definition,
+     not at its consumers — while the page around it goes dark, and every text use it has is
+     dark-on-dark by construction. The share test above does not catch it: the question is not how
+     the evidence splits but that one side of the split gets no treatment at all. tailwindcss.com's
+     `--color-gray-950` is #030712 with bg 45 / text 12 / border 16 — a 16% text share, just under
+     the 20% that tips a token — and it paints the h1. `mixed` is the safe answer and costs nothing
+     here, since the definition stays untouched either way.
+   - **"No literal value" is TWO situations, and conflating them hid a whole class of pages.** A
+     CHAIN has definitions, just none with a literal in them (`defs > 0`): its consumers are
+     rewritten in place and the tokens it is built from carry the colour. A token with `defs === 0`
+     has no definition the probe could find AT ALL, while the browser reports a value for it on the
+     root. Treated as a chain it is held back from the root pins, and since there is nothing to
+     rewrite either, it is recoloured nowhere. vercel.com's `--ds-background-100` reads #ffffff
+     computed, is `bg` by 83 uses, and has defs 0 — that is how its header buttons stayed white.
+     Such a token is now pinned at the root AND rewritten at its consumers: **the two reach
+     different elements** and choosing between them is the mistake. The consumer rules cover every
+     use the probe saw, including inside a section that re-points the token; the pin covers what it
+     did not see. Moving them to the pins alone left github.com 87% light with 70 unreadable runs.
+     Largest single effect of the lot: idealo.de 312 → 6 unreadable, dev.to 57 → 8.
+   - **Relative colour syntax is not a token consumer.** In `oklch(from var(--ds-gray-200) 0.94 c h)`
+     the token is the BASE, not the value — the base is a mid grey, the result is all but white.
+     Recorded as a consumer, vercel.com's "New" pills were handed that token's treatment and stayed
+     light while the label inside them was correctly lifted. Nothing in the value can be read
+     statically (`from` means "ask the browser"), so these are resolved from the COMPUTED value off
+     the first element the rule matches — which is also how a `::before` is reached at all, that
+     being a surface the paint census cannot hit-test.
    - **The census must grade READABILITY, not just surfaces.** `lightFraction` and `docLightFraction`
      both scored the broken IMDb page a perfect 0% while 36 runs of text were pure black on `#121212`:
      darkening a surface without lightening its text is invisible to any measure of how light the page
@@ -308,6 +350,19 @@ sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → 
      before: our `#e6e6e6` on the white search bar we never reach, plus the OneTrust button. Reference
      pages after the sheet: HN 0, MDN 0, GitHub 0, amazon.de 6 → 0, Wikipedia 2 (its white fundraising
      banner, the same known gap that keeps it at 29%).
+   - **A COLOUR PARSER THAT ONLY READS `rgb()` IS NOT A READER OF COMPUTED COLOURS**, it is a reader of
+     old stylesheets, and everything it cannot parse it drops in silence. Gecko serialises a computed
+     colour in the space the AUTHOR wrote it in, so with Tailwind v4 shipping its palette in `oklch()`
+     a text colour comes back as `lab(1.90334 0.278696 -5.48866)`. The census regex returned null,
+     and a colour that does not parse falls out of the readability tally entirely — element and all.
+     Measured on tailwindcss.com: `unreadable 0 of 57` while the h1 stood at #030712 on #121212, a
+     contrast of 1.04:1, plainly unreadable in the screenshot. Fixed, the same page reads 101 of 394;
+     amazon.de went from 455 counted text elements to 723. Note the shape of it: not a wrong number
+     but a wrong number that LOOKS LIKE SUCCESS, which is how a round of "80 → 0 unreadable" was
+     reported here that had repaired nothing. Any figure measured before this is suspect in the same
+     direction. The fix is the canvas `fillStyle` that restyle-probe.js's `canon` has always used —
+     which is exactly why the COMPILER never had this blind spot, only the measure did.
+     **When you add a colour format to one side, check the other side can read it.**
    - **native-theme** is for a real site-wide hook: a root-level class/attribute backing dozens of
      descendant rules (Stack Overflow's `body.theme-dark`, 204 rules), `light-dark()` pairs (MDN — the
      `color-scheme:dark` the compiler always sets flips them), or a big prefers-dark block, which is
@@ -394,6 +449,37 @@ sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → 
      blend (`multiply`/`darken`) on an image whose backdrop we darkened is reset to `normal` along with
      the backdrop. Note the symptom is invisible to every DOM-side check: `getComputedStyle(img)
      .backgroundColor` read `rgb(255,255,255)` while the pixels read `rgb(18,18,18)`. Only pixels caught it.
+   - **The same blend on a SURFACE, and there the answer is `screen`, not `normal`.** vercel.com's
+     "New" pills are a `::before` with `before:mix-blend-multiply`; recoloured they measured a
+     perfect #e6e6e6 on #1c1c1e — 13:1 — and were invisible on screen, multiplied into the dark
+     page. But setting `normal` broke them the other way: such a `::before` is `absolute; inset:0`,
+     which puts it ABOVE the element's own text in paint order, and it stays legible only because
+     multiply lets what is underneath show through. Opaque, it covered the label — the pill became
+     visible and the word inside it disappeared. SCREEN is multiply's dual (it lightens where
+     multiply darkens), it suits the dark colour our mapping just wrote, and it is exactly the swap
+     the site itself makes for its own dark mode (`dark-theme:before:mix-blend-screen`).
+     Both failures look identical to `getComputedStyle`, so **verify a blend at the PIXEL**: read
+     the darkest and lightest pixel inside the element's own rect and take the ratio. And take the
+     rect AFTER scrolling has settled — reading it before cost a round, measuring an empty patch of
+     background and reporting a flat 1.00:1 that looked exactly like the real failure.
+   - **In an INTERACTION rule, writing nothing is not neutral — it SUPPRESSES.** Our sheet is
+     injected `cssOrigin:"user"`, so a base rule of ours beats the site's `:hover` rule outright.
+     Decline to rewrite a hover and the state stops existing for the reader. chefkoch.de's buttons
+     change only their label colour on hover (`#6ca075`, l≈0.53); `mapText` answered "already light"
+     with null, we emitted nothing, and hovering did nothing at all. So when the selector is an
+     interaction one, a mapping of null means **write the original colour back** — one declaration,
+     and the state is restored exactly as the site designed it.
+     The same reasoning covers translucent washes, which is how most hover feedback is built:
+     `rgba(35,39,47,.05)` over white is the standard tint and over #121212 is invisible, so in an
+     interaction rule a faint wash (alpha under `OVERLAY_ALPHA` = 0.25) is flipped to a light one of
+     the same alpha, chromatic ones keeping their hue. **Only in interaction rules** — applied
+     everywhere it lightened the wash sitting on github.com's white marketing header, a surface we
+     do not darken, taking it 5% → 12% light with 9 unreadable runs. And **no lightness test**: a
+     first version required `l < 0.5` and missed react.dev's outlined buttons, whose wash is
+     `rgba(120,131,155,.05)` at l≈0.54, which fell through to the bands and became `raised` at 5%
+     alpha — invisible. Above 0.25 alpha it is not feedback any more but a scrim with an intent of
+     its own, and it keeps darkening.
+     None of this class shows up in `dark-check`: see the note on origin below.
    - **A data-URI SVG in `background-image` is an ICON, not a surface.** amazon.de's carousel arrows are
      `url("data:image/svg+xml,%3Csvg … fill='%230F1111'%3E")` on a white button: darken the button by the
      bg role and the arrow is black on black. The markup is readable, so its paint colours are substituted
@@ -482,6 +568,17 @@ sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → 
      `RELIGHT_FRACTION`, a single light surface over `LIGHT_SURFACE_PX` (40,000 px², about
      200×200), or `TOPUP_UNREADABLE` (5) unreadable runs — unreadable text being a strictly worse
      failure than a light surface, and already measured.
+     **And that third trigger stopped converging the moment the census learned to read
+     `lab()`/`oklch()`.** It then saw unreadable text it had been blind to, on pages where a
+     re-probe cannot fix it — react.dev 20, dev.to 9, mediamarkt.de 47, a mix of the site's own
+     low-contrast text and gaps of ours. So every navigation pulled our sheet off, re-probed and
+     rebuilt to the same number: **the cache looked broken**, every load flashed for the length of
+     a probe, and nothing improved. (That is what a non-converging trigger looks like from the
+     outside — not an error, a loop.) The top-up therefore measures whether it helped and, if the
+     count did not drop, retires the trigger for the ORIGIN (`entry.unreadableSettled`). On the
+     origin, not the tab, whose record the next navigation rebuilds — which is the loop itself.
+     Consequence worth knowing while testing: an origin whose sheet predates a compiler change now
+     keeps it instead of being rebuilt every visit. Right-click → "forget this site" to recompile.
      **MEDIA is excluded from `lightSurface`**, and that is not a detail: a light background on an
      `<img>` is the PICTURE's backdrop, which the compiler deliberately never darkens
      (`imageSubject` / `imageBackdrops`). Counting it made the one thing we refuse to change the
@@ -568,6 +665,18 @@ sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → 
      A page whose census says 0% and whose pixels say 50%+ has a painter the census cannot see.
      `--size WxH` matters: amazon.de serves a different layout wide, and the SFS cards that stayed white
      only appear at ~2000px.
+   - **KNOWN GAP: `dark-check` does not measure what the extension does.** It injects the sheet as a
+     plain `<style>` — AUTHOR origin — while darkmode.js uses `tabs.insertCSS({cssOrigin:"user"})`,
+     which beats every author rule including a more specific one carrying `!important`. The two
+     disagree exactly where it matters: in the tool the site's `:hover` rule still wins, in the
+     browser ours does. So a hover (or focus, or active) we fail to translate is merely untouched
+     in the numbers and SUPPRESSED for the user — and no figure dark-check prints can show it.
+     Three defects of that shape were found by the user on real pages and were invisible to every
+     run of the tool: vercel.com's header buttons, react.dev's, and chefkoch.de's label-only hover.
+     **Do not conclude from a clean dark-check run that interaction states are fine.** Closing this
+     means loading the compiled sheet as real user CSS in the test profile — `chrome/userContent.css`
+     in the profile directory, which has to exist before Firefox starts, so it needs a two-stage run
+     (compile, then relaunch). Until then, that whole class needs a human at a browser.
 5. **Script mode** — the third sidebar toggle (live only with "Use page"). The agent and the user build a
    per-site **script**: rules that hide, fade, move or make click-through the UI on top of videos.
    [background/userscripts.js](src/background/userscripts.js) is the browser half (storage, insertCSS, census,
