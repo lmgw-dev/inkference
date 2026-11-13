@@ -145,9 +145,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           v="${{ steps.v.outputs.version }}"
+          # Created with --generate-notes first, then the AMO pointer is prepended to what that
+          # produced. `gh release create` has no flag that does both: --notes/--notes-file REPLACE
+          # the generated body, and there is no --notes-start-with (only --notes-start-TAG, which
+          # picks the commit range). Getting that wrong is what failed the v0.9.1 run — after the
+          # submission had already gone through, so the release is the only thing that was missing.
+          gh release create "$REF" --title "Inkference $v" --generate-notes
           {
             printf 'Submitted to AMO for review: https://addons.mozilla.org/firefox/addon/inkference/\n\n'
-            printf 'Once review passes, Firefox installs and updates this version from the catalogue.\n'
+            printf 'Once review passes, Firefox installs and updates this version from the catalogue.\n\n'
+            gh release view "$REF" --json body -q .body
           } > dist-notes.md
-          gh release create "$REF" --title "Inkference $v" --generate-notes \
-            --notes-start-with "$(cat dist-notes.md)"
+          gh release edit "$REF" --notes-file dist-notes.md
