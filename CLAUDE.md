@@ -22,7 +22,9 @@ npm run sign -- --api-key=… --api-secret=…   # unlisted AMO signature -> dis
 #          copy of src/, never committed (src/manifest.json's version is not the released one)
 npm run mock     # serve mock/ (a fake locked-down device) on http://localhost:8088 for agent testing
 npm run ground-check -- --model gemma4-12b   # measure a model's screen-vision aim (see feature 1)
-npm run dark-check -- [--model gemma4-12b] <url…>   # measure AI dark mode on real pages (see feature 4)
+npm run dark-check -- [--model gemma4-12b] [--user-origin] <url…>   # measure AI dark mode on real pages (see feature 4)
+                 # --user-origin: apply the sheet as the extension does (cssOrigin:"user"), the only
+                 # way :hover/:focus/:active are measured at all. Costs a second Firefox per page.
 npm run script-check -- [--rules mock/feed-rules.json] [--scrolls N] <url…>   # Script mode: overlays over videos, rule health
 npm run script-e2e -- --model gemma4-12b [--prompt "…"|--turns f.json] [--approve yes|no]   # Script mode end to end: real extension + model, transcript, deploy-2 check
 npm run script-e2e -- --model gemma4-12b --scenario repair   # Script mode health check → stale → repair, on feed.html?rename=1
@@ -665,18 +667,34 @@ sent), appends "set the gateway API key in Inkference settings (lmgw: Usage → 
      A page whose census says 0% and whose pixels say 50%+ has a painter the census cannot see.
      `--size WxH` matters: amazon.de serves a different layout wide, and the SFS cards that stayed white
      only appear at ~2000px.
-   - **KNOWN GAP: `dark-check` does not measure what the extension does.** It injects the sheet as a
-     plain `<style>` — AUTHOR origin — while darkmode.js uses `tabs.insertCSS({cssOrigin:"user"})`,
-     which beats every author rule including a more specific one carrying `!important`. The two
-     disagree exactly where it matters: in the tool the site's `:hover` rule still wins, in the
-     browser ours does. So a hover (or focus, or active) we fail to translate is merely untouched
-     in the numbers and SUPPRESSED for the user — and no figure dark-check prints can show it.
-     Three defects of that shape were found by the user on real pages and were invisible to every
-     run of the tool: vercel.com's header buttons, react.dev's, and chefkoch.de's label-only hover.
-     **Do not conclude from a clean dark-check run that interaction states are fine.** Closing this
-     means loading the compiled sheet as real user CSS in the test profile — `chrome/userContent.css`
-     in the profile directory, which has to exist before Firefox starts, so it needs a two-stage run
-     (compile, then relaunch). Until then, that whole class needs a human at a browser.
+   - **`--user-origin` measures the sheet the way the EXTENSION applies it.** By default dark-check
+     injects a plain `<style>` — AUTHOR origin — while darkmode.js uses
+     `tabs.insertCSS({cssOrigin:"user"})`, which beats every author rule including a more specific
+     one carrying `!important`. The two disagree exactly where it matters: in the tool the site's
+     `:hover` rule still wins, in the browser ours does, so an interaction state we fail to
+     translate reads as untouched and is SUPPRESSED for the user. Three defects of that shape
+     reached the user past clean runs of this tool (vercel.com's header buttons, react.dev's,
+     chefkoch.de's label-only hover).
+     User CSS must be on disk before Firefox starts, so `launchFirefox({userCss})` writes
+     `chrome/userContent.css` into the throwaway profile and sets
+     `toolkit.legacyUserProfileCustomizations.stylesheets`; the flag then re-measures the finished
+     page in a SECOND browser. Verified against a page whose author rule is
+     `html body div#box.a.b.c { background: #fff !important }`: a user-origin `#box` rule wins.
+     The compile is untouched — probe and census both run before anything is applied — so the flag
+     changes the verdict, never the sheet. Cost: one extra Firefox start per page, which is why it
+     is opt-in. At rest both origins report the same numbers, since there our rules win anyway.
+   - **The `hover` line counts what the census structurally cannot see.** The census grades the page
+     AT REST, so a state that exists only under the pointer is outside everything it reports. Each
+     interaction rule the probe recorded (`:hover`, `:focus`, `:active`, `[data-state=…]`,
+     `[aria-selected]`) that paints is matched against the compiled sheet; one we did not emit is
+     one our base rule overrides and never restores. kleinanzeigen.de 441 of 441, react.dev 64 of
+     65, vercel.com 367 of 420.
+     **A consumer of a token we rewrite is NOT missing** — the token carries the new value and the
+     state follows by itself. Ignoring that put vercel.com at 155 "suppressed" when nearly all were
+     `var(--ds-gray-*)` consumers the sheet pins at the root; the honest figure is 53. Only a
+     colour reaching the page by a route we never touch is really overridden.
+     It still does not prove the result is READABLE — that needs the pointer actually moved — so it
+     finds "the hover stopped happening", not "the hover is hard to read".
 5. **Script mode** — the third sidebar toggle (live only with "Use page"). The agent and the user build a
    per-site **script**: rules that hide, fade, move or make click-through the UI on top of videos.
    [background/userscripts.js](src/background/userscripts.js) is the browser half (storage, insertCSS, census,

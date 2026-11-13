@@ -15,13 +15,23 @@
 // tab), and `onOutput` receives Firefox's stdout/stderr after the BiDi banner.
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export async function launchFirefox({ width = 1280, height = 900, binary = process.env.FIREFOX || "firefox", bannerTimeout = 30000, prefs = {}, args = [], onOutput = null } = {}) {
+export async function launchFirefox({ width = 1280, height = 900, binary = process.env.FIREFOX || "firefox", bannerTimeout = 30000, prefs = {}, args = [], onOutput = null, userCss = null } = {}) {
   const profile = await mkdtemp(join(tmpdir(), "rsd-bidi-"));
   const base = { "remote.active-protocols": 1, "browser.shell.checkDefaultBrowser": false, "datareporting.policy.dataSubmissionEnabled": false };
+  // `userCss` is loaded as chrome/userContent.css, i.e. at USER ORIGIN — the only way to
+  // reproduce what the extension does, since `tabs.insertCSS({cssOrigin:"user"})` beats every
+  // author rule including a more specific one carrying `!important`, and a <style> element
+  // cannot. It has to be on disk BEFORE Firefox starts and the pref has to be on, which is why
+  // this is a launch option and not something a running browser can be told.
+  if (userCss) {
+    await mkdir(join(profile, "chrome"), { recursive: true });
+    await writeFile(join(profile, "chrome", "userContent.css"), userCss);
+    base["toolkit.legacyUserProfileCustomizations.stylesheets"] = true;
+  }
   const userJs = Object.entries({ ...base, ...prefs }).map(([k, v]) => `user_pref(${JSON.stringify(k)}, ${JSON.stringify(v)});`);
   await writeFile(join(profile, "user.js"), userJs.join("\n") + "\n");
   const proc = spawn(binary, ["--headless", "--no-remote", "--profile", profile, "--remote-debugging-port", "0", ...args, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });

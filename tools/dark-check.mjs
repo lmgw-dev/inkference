@@ -49,6 +49,11 @@ let maxLight = 0.25; // a page still lighter than this after the theme is a fail
 let settle = 8000; // MAX ms to wait for late-loading styles to land before probing (adaptive — see settlePage)
 let width = 1280;
 let height = 900;
+// Measure the result the way the EXTENSION applies its sheet (cssOrigin:"user"), not the way a
+// <style> element does. Costs a second Firefox start per page, so it is opt-in — but a clean run
+// without it says nothing about :hover/:focus/:active. See CLAUDE.md, "dark-check does not
+// measure what the extension does".
+let userOrigin = false;
 for (let i = 0; i < args.length; i++) {
   const next = () => args[++i];
   if (args[i] === "--model" || args[i] === "-m") model = next();
@@ -56,6 +61,7 @@ for (let i = 0; i < args.length; i++) {
   else if (args[i] === "--out") out = next();
   else if (args[i] === "--max-light") maxLight = Number(next());
   else if (args[i] === "--settle") settle = Number(next());
+  else if (args[i] === "--user-origin") userOrigin = true;
   else if (args[i] === "--size") {
     const [w, h] = next().split("x").map(Number);
     width = w;
@@ -67,7 +73,7 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 if (!urls.length) {
-  console.error("usage: npm run dark-check -- [--model <id>] [--out DIR] [--max-light 0.25] [--settle MAX_MS] [--size WxH] <url> [url…]");
+  console.error("usage: npm run dark-check -- [--model <id>] [--out DIR] [--max-light 0.25] [--settle MAX_MS] [--size WxH] [--user-origin] <url> [url…]");
   process.exit(2);
 }
 
@@ -156,6 +162,44 @@ async function planFor(summary) {
 const injectCode = (css, entry) =>
   `(function(){var s=document.getElementById("rsd-dark-check");if(s)s.remove();s=document.createElement("style");s.id="rsd-dark-check";s.textContent=${JSON.stringify(css)};document.documentElement.appendChild(s);` +
   `var a=${JSON.stringify(entry.rootAttributes || {})},c=${JSON.stringify(entry.rootClasses || [])};[document.documentElement,document.body].forEach(function(el){for(var k in a)el.setAttribute(k,a[k]);for(var i=0;i<c.length;i++)el.classList.add(c[i]);});return true;})()`;
+// The census grades the page AT REST, so a state that only exists under the pointer is outside
+// everything it reports — and under `cssOrigin:"user"` an interaction rule we do not rewrite is
+// not merely untouched, it is SUPPRESSED by our own base rule. That is a failure no light
+// fraction and no contrast count can reach, and it is how three defects reached the user
+// (vercel.com, react.dev, chefkoch.de) past clean runs of this tool.
+// This is the cheap half of the answer: the site's interaction rules that paint are already in
+// the probe, so each one is matched against the sheet we just compiled. A rule the sheet does
+// not carry is one the browser will let us override and never restore. It does not prove the
+// result is READABLE — that needs the pointer actually moved — but it finds the whole class of
+// "the hover stopped happening", which is what actually went wrong.
+const INTERACTION = /:(hover|focus|focus-visible|focus-within|active|checked|target)\b|\[(data-[\w-]*(state|hover|active|selected|pressed)|aria-(selected|pressed|current))/i;
+function suppressedHovers(seam, css) {
+  const paints = (d) => /^(color|background-color|border(-[a-z]+)?-color|outline-color|fill|stroke)$/.test(d.p);
+  const miss = [];
+  let total = 0;
+  for (const r of seam.paint || []) {
+    const sel = String(r.sel || "");
+    if (!INTERACTION.test(sel) || !(r.d || []).some(paints)) continue;
+    total++;
+    // Compare on the first selector of the group, the way the sheet emits it. Escapes and all:
+    // a Tailwind selector is mostly backslashes, so this is a literal containment test.
+    const first = sel.split(",")[0].trim();
+    if (first.length <= 8 || css.includes(first.slice(0, 60))) continue;
+    // A rule we did not emit is NOT suppressed if every colour it sets comes through a token we
+    // rewrite: the token carries the new value and the state follows by itself. Counting those
+    // as missing put vercel.com at 155 when nearly all of them were consumers of `--ds-gray-*`
+    // that the sheet pins at the root. Only a rule with a colour reaching the page by some route
+    // we never touch is actually overridden by our base rule and never restored.
+    const live = (r.d || []).filter(paints).some((d) => !(d.var && css.includes(d.var + ":")));
+    if (live) miss.push(first.slice(0, 70));
+  }
+  return { total, missing: miss.length, sample: miss.slice(0, 4) };
+}
+
+// Just the root hooks, with no stylesheet: used by the user-origin pass, where the CSS arrives
+// from the profile and only the attributes/classes a native theme needs still have to be set.
+const hookCode = (entry) =>
+  `(function(){var a=${JSON.stringify(entry.rootAttributes || {})},c=${JSON.stringify(entry.rootClasses || [])};[document.documentElement,document.body].forEach(function(el){for(var k in a)el.setAttribute(k,a[k]);for(var i=0;i<c.length;i++)el.classList.add(c[i]);});return true;})()`;
 const removeCode = (entry) =>
   `(function(){var s=document.getElementById("rsd-dark-check");if(s)s.remove();var a=${JSON.stringify(entry.rootAttributes || {})},c=${JSON.stringify(entry.rootClasses || [])};[document.documentElement,document.body].forEach(function(el){for(var k in a)el.removeAttribute(k);for(var i=0;i<c.length;i++)el.classList.remove(c[i]);});return true;})()`;
 
@@ -238,14 +282,42 @@ async function checkUrl(ff, url) {
       break;
     }
   }
+  // RE-MEASURE AT USER ORIGIN, which is the only reading that describes the extension.
+  // Everything above injects the sheet as a <style> — author origin — and there the site's own
+  // rules still compete with ours on specificity. darkmode.js uses
+  // `tabs.insertCSS({cssOrigin:"user"})`, which beats EVERY author rule, including a more
+  // specific one carrying `!important`. The two disagree exactly where it matters: an
+  // interaction state we fail to translate reads as merely untouched above and is SUPPRESSED in
+  // the browser. Three such defects were found by hand on vercel.com, react.dev and
+  // chefkoch.de while no run of this tool could see them.
+  // User CSS has to be on disk before Firefox starts, so this is a second browser on the same
+  // page rather than a second injection. The COMPILE is untouched — probe and census both run
+  // before anything is applied — so only the verdict changes, never the sheet.
+  if (userOrigin) {
+    const ff2 = await launchFirefox({ width, height, userCss: entry.css });
+    try {
+      await ff2.navigate(url);
+      await settlePage(ff2, settle);
+      // The root hooks of a native theme are attributes and classes, which no stylesheet can
+      // set — they are applied here the same way the extension does.
+      await ff2.evaluate(hookCode(entry));
+      await sleep(200);
+      const after2 = await ff2.evaluate(censusSrc);
+      if (after2) entry.after = after2;
+      await ff2.screenshot(join(out, host + ".after.png"));
+    } finally {
+      await ff2.close();
+    }
+  }
   const note = entry.note || "";
-  await ff.screenshot(join(out, host + ".after.png"));
+  if (!userOrigin) await ff.screenshot(join(out, host + ".after.png"));
   const pxAfter = await pixelLight(join(out, host + ".after.png"));
   await writeFile(join(out, host + ".css"), entry.css);
   await writeFile(join(out, host + ".after.json"), JSON.stringify(entry.after, null, 1));
   await ff.evaluate(removeCode(entry));
   // What still paints light, by share and painter — the next thing to fix, right in the output.
   const stillLight = ((entry.after && entry.after.backgrounds) || []).filter((b) => b.light).slice(0, 4).map((b) => `${b.color} ${Math.round(b.share * 100)}% (${b.by.join(", ")})`);
+  const hover = suppressedHovers(seam, entry.css);
   return {
     url,
     host,
@@ -269,6 +341,7 @@ async function checkUrl(ff, url) {
     totalMs: Date.now() - t0,
     note,
     stillLight,
+    hover,
   };
 }
 
@@ -287,7 +360,7 @@ async function main() {
   } finally {
     await ff.close();
   }
-  console.log(`model ${model || "(none: default theme)"}   viewport ${width}x${height}   output ${out}\n`);
+  console.log(`model ${model || "(none: default theme)"}   viewport ${width}x${height}   origin ${userOrigin ? "user (as the extension applies it)" : "author (<style> — blind to :hover/:focus/:active)"}   output ${out}\n`);
   let failed = 0;
   for (const r of rows) {
     if (r.error) {
@@ -309,6 +382,14 @@ async function main() {
     console.log(`    pixels  light ${pct(r.pxBefore)} → ${pct(r.pxAfter)}   (what the screenshot shows; photos and product art count, so it never reaches 0)`);
     console.log(`    unread  text  ${String(r.unreadBefore ?? "?").padStart(4)} → ${String(r.unreadAfter ?? "?").padStart(4)} of ${r.textElements ?? "?"}   (contrast under 3:1 against the nearest painted surface — the number the light fractions cannot see)`);
     for (const w of r.worstText || []) console.log(`      ${String(w.n).padStart(4)}×  ${w.pair}   ${w.by.join(", ")}`);
+    if (r.hover && r.hover.total) {
+      const h = r.hover;
+      console.log(
+        `    hover   ${String(h.total - h.missing).padStart(4)} of ${h.total} interaction rules rewritten` +
+          (h.missing ? `, ${h.missing} NOT — under cssOrigin:"user" those states are SUPPRESSED, not left alone` : "   (none suppressed)")
+      );
+      for (const m of h.sample) console.log(`         ${m}`);
+    }
     if (r.lightSurface)
       console.log(`    biggest light surface left: ${r.lightSurface.w}×${r.lightSurface.h} = ${r.lightSurface.area}px² ${r.lightSurface.color}  ${r.lightSurface.by}   (an AREA, not a share: a box this size is conspicuous whatever the window width)`);
     if (r.stillLight && r.stillLight.length) console.log("    still light: " + r.stillLight.join("; "));
