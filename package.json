@@ -1,6 +1,6 @@
 {
   "name": "inkference",
-  "version": "0.6.0",
+  "version": "0.9.1",
   "type": "module",
   "private": true,
   "description": "Page-aware LLM sidebar + right-click actions for the lmgw gateway (Firefox MV2)",

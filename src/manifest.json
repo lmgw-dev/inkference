@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Inkference",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "AI dark mode, a page-aware sidebar agent and read-aloud, powered by your own local models via lmgw",
   "homepage_url": "https://github.com/lmgw-dev/inkference",
 
