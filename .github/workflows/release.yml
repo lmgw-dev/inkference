@@ -1,19 +1,37 @@
-# Signed release on a version tag: push `v0.8.0` and this lints, signs the add-on as UNLISTED on
-# AMO (free, not in the public catalogue), and publishes a GitHub Release carrying the signed XPI
-# plus the updates.json that installed copies poll to update themselves.
+# Signed release on a version tag. Two destinations, ONE PER TAG:
+#
+#   listed   (default) — submits to the public AMO catalogue. AMO serves the listing and the
+#                        updates; nothing is self-hosted. This is what addons.mozilla.org shows.
+#   unlisted           — AMO signs but does not list. The XPI goes into a GitHub Release with the
+#                        updates.json that installed copies poll. Run it from the Actions tab.
+#
+# WHY ONE PER TAG: a version number is unique per add-on across BOTH channels. A number signed
+# unlisted can never be submitted listed (and deleting the version does not free it), so a
+# workflow that pushed the same tag to both would always fail on the second. Pick the channel
+# for the tag; the next release takes the next number whichever channel it goes to.
 #
 # One-time setup: repository secrets WEB_EXT_API_KEY / WEB_EXT_API_SECRET (`gh secret set -f .env`)
 # (https://addons.mozilla.org/developers/addon/api/key/).
 #
-# The tag is the version: AMO refuses a version it has signed before, so it must be higher than
-# every earlier signature. src/manifest.json is not edited in git — version and update_url are
-# spliced into a throwaway copy, so a later LISTED channel (where AMO serves updates and a custom
-# update_url is not allowed) only needs this file changed.
+# The tag is the version, and it must be higher than every number AMO has seen. src/manifest.json
+# is not edited in git: the version — and, for unlisted only, the update_url — are spliced into a
+# throwaway copy. A listed add-on may not carry a custom update_url at all, which is why the two
+# channels stage the manifest differently.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to build (e.g. v0.9.1). Must already exist."
+        required: true
+      channel:
+        description: "AMO channel"
+        type: choice
+        options: [listed, unlisted]
+        default: listed
 
 permissions:
   contents: write # create the release
@@ -27,8 +45,16 @@ jobs:
     runs-on: ubuntu-latest
     env:
       REPO_URL: https://github.com/${{ github.repository }}
+      # A tag push goes to the public catalogue; the self-hosted path is a deliberate choice made
+      # from the Actions tab.
+      CHANNEL: ${{ inputs.channel || 'listed' }}
+      REF: ${{ inputs.tag || github.ref_name }}
     steps:
+      # `env.REF` rather than the input expression: the value reaches every later step as a shell
+      # variable, never as template text spliced into a command line.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
 
       - uses: actions/setup-node@v4
         with:
@@ -40,33 +66,57 @@ jobs:
       - name: Version from tag
         id: v
         run: |
-          v="${GITHUB_REF_NAME#v}"
+          v="${REF#v}"
           # AMO: 1–4 dot-separated integers, no letters or hyphens
-          [[ "$v" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "::error::tag $GITHUB_REF_NAME is not a valid add-on version (vX.Y[.Z[.W]])"; exit 1; }
+          [[ "$v" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "::error::tag $REF is not a valid add-on version (vX.Y[.Z[.W]])"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Releasing $v to the $CHANNEL channel"
 
-      - name: Stage manifest (version + update_url)
+      - name: Stage manifest
         run: |
           rm -rf build && mkdir build && cp -r src build/src
           rm -f build/src/.amo-upload-uuid
-          jq --arg v "${{ steps.v.outputs.version }}" \
-             --arg u "$REPO_URL/releases/latest/download/updates.json" \
-             '.version = $v | .browser_specific_settings.gecko.update_url = $u' \
-             src/manifest.json > build/src/manifest.json
+          if [ "$CHANNEL" = "listed" ]; then
+            # A listed add-on must NOT carry an update_url: AMO serves its updates, and the lint
+            # rejects one. Any url left over from an earlier unlisted build is removed here.
+            jq --arg v "${{ steps.v.outputs.version }}" \
+               '.version = $v | del(.browser_specific_settings.gecko.update_url)' \
+               src/manifest.json > build/src/manifest.json
+          else
+            jq --arg v "${{ steps.v.outputs.version }}" \
+               --arg u "$REPO_URL/releases/latest/download/updates.json" \
+               '.version = $v | .browser_specific_settings.gecko.update_url = $u' \
+               src/manifest.json > build/src/manifest.json
+          fi
           jq -r '.name + " " + .version + " · " + .browser_specific_settings.gecko.id' build/src/manifest.json
 
-      # --self-hosted: an update_url is expected here (AMO's lint would flag it for listed add-ons)
-      - run: npx web-ext lint --source-dir=build/src --self-hosted
+      - name: Lint
+        run: |
+          # --self-hosted tells the linter an update_url is expected. For a listed build it must be
+          # absent, so the stricter default applies and a stray update_url is caught here.
+          if [ "$CHANNEL" = "listed" ]; then
+            npx web-ext lint --source-dir=build/src
+          else
+            npx web-ext lint --source-dir=build/src --self-hosted
+          fi
 
-      - name: Sign (unlisted)
+      - name: Sign / submit
         env:
           WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
           WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
         run: |
           [ -n "$WEB_EXT_API_KEY" ] && [ -n "$WEB_EXT_API_SECRET" ] || { echo "::error::set the WEB_EXT_API_KEY / WEB_EXT_API_SECRET repository secrets"; exit 1; }
-          npx web-ext sign --channel=unlisted --source-dir=build/src --artifacts-dir=dist --approval-timeout=900000
+          if [ "$CHANNEL" = "listed" ]; then
+            # --approval-timeout=0: upload and return. A listed submission enters AMO's review
+            # queue, which can take days; waiting for the signature would fail the run for a
+            # submission that is perfectly fine. Watch it on the AMO developer hub.
+            npx web-ext sign --channel=listed --source-dir=build/src --artifacts-dir=dist --approval-timeout=0
+          else
+            npx web-ext sign --channel=unlisted --source-dir=build/src --artifacts-dir=dist --approval-timeout=900000
+          fi
 
       - name: Collect XPI + updates.json
+        if: env.CHANNEL == 'unlisted'
         id: out
         run: |
           v="${{ steps.v.outputs.version }}"
@@ -74,14 +124,30 @@ jobs:
           [ -n "$xpi" ] || { echo "::error::web-ext produced no .xpi"; exit 1; }
           mv "$xpi" "dist/inkference-$v.xpi"
           id=$(jq -r '.browser_specific_settings.gecko.id' src/manifest.json)
-          jq -n --arg id "$id" --arg v "$v" --arg link "$REPO_URL/releases/download/$GITHUB_REF_NAME/inkference-$v.xpi" \
+          jq -n --arg id "$id" --arg v "$v" --arg link "$REPO_URL/releases/download/$REF/inkference-$v.xpi" \
             '{addons: {($id): {updates: [{version: $v, update_link: $link}]}}}' > dist/updates.json
           cat dist/updates.json
 
-      - name: GitHub Release
+      - name: GitHub Release (unlisted — carries the XPI people install)
+        if: env.CHANNEL == 'unlisted'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           v="${{ steps.v.outputs.version }}"
-          gh release create "$GITHUB_REF_NAME" "dist/inkference-$v.xpi" dist/updates.json \
+          gh release create "$REF" "dist/inkference-$v.xpi" dist/updates.json \
             --title "Inkference $v" --generate-notes
+
+      # For a listed release the XPI is not ours to hand out — AMO signs it after review and
+      # serves it from the catalogue — so the release is notes only, with a pointer to the listing.
+      - name: GitHub Release (listed — notes only)
+        if: env.CHANNEL == 'listed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ steps.v.outputs.version }}"
+          {
+            printf 'Submitted to AMO for review: https://addons.mozilla.org/firefox/addon/inkference/\n\n'
+            printf 'Once review passes, Firefox installs and updates this version from the catalogue.\n'
+          } > dist-notes.md
+          gh release create "$REF" --title "Inkference $v" --generate-notes \
+            --notes-start-with "$(cat dist-notes.md)"
